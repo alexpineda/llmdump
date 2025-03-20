@@ -1,6 +1,6 @@
 import { crawl } from "./lib/firecrawl";
 import { generateObject, generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import type { CrawlStatusResponse } from "@mendable/firecrawl-js";
 import fs from "node:fs";
@@ -41,21 +41,38 @@ const argv = yargs(hideBin(process.argv))
     description: "The number of pages to crawl",
     default: 10,
   })
-  .option("api-key", {
+  .option("firecrawl-key", {
     type: "string",
     alias: "k",
     description: "The API key for Firecrawl",
   })
+  .option("openai-key", {
+    type: "string",
+    alias: "o",
+    description: "The API key for OpenAI",
+  })
   .parseSync();
 
-const apiKey = argv["api-key"] || process.env.FIRECRAWL_API_KEY;
+const firecrawlApiKey = argv["firecrawl-key"] || process.env.FIRECRAWL_API_KEY;
+const openaiApiKey = argv["openai-key"] || process.env.OPENAI_API_KEY;
 
-if (!apiKey) {
+if (!firecrawlApiKey) {
   console.error(
     "Please provide an API key for Firecrawl either as an argument or as an environment variable"
   );
   process.exit(1);
 }
+
+if (!openaiApiKey) {
+  console.error(
+    "Please provide an API key for OpenAI either as an argument or as an environment variable"
+  );
+  process.exit(1);
+}
+
+const openai = createOpenAI({
+  apiKey: openaiApiKey,
+});
 
 if (fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"))) {
   crawlResult = JSON.parse(
@@ -65,17 +82,29 @@ if (fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"))) {
     )
   );
 } else {
-  crawlResult = await crawl(argv.crawlUrl, { limit: argv.limit }, apiKey);
+  crawlResult = await crawl(
+    argv.crawlUrl,
+    { limit: argv.limit },
+    firecrawlApiKey
+  );
   await fs.promises.writeFile(
     path.join(currentCrawlDir, "crawlResult.json"),
     JSON.stringify(crawlResult, null, 2)
   );
 }
 
-const orderInput = crawlResult.data.map((d: any) => ({
+type CrawledDocument = {
+  url: string;
+  title: string;
+  description: string;
+  content: string;
+};
+
+const orderInput: CrawledDocument[] = crawlResult.data.map((d: any) => ({
   url: d.metadata.url,
   title: d.metadata.title,
   description: d.metadata.description,
+  content: d.markdown || "",
 }));
 
 // console.log(orderInput);
@@ -88,6 +117,32 @@ type IdentifierSchema = z.infer<typeof identifierSchema>;
 
 let identifier: IdentifierSchema;
 
+async function generateIdentifier(documents: CrawledDocument[]) {
+  const result = await generateObject({
+    model: openai("gpt-4o-mini"),
+    schema: identifierSchema,
+    prompt: `Provide a unique identifier for the following links: ${documents
+      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
+      .join("\n")}
+          
+          The identifier should be a unique identifier for the links.
+          It should be a short string that is easy to remember.
+    
+    
+          Example:
+          {
+            "identifier": "tanstack-router-react-docs"
+          }
+      
+          Your output should be a JSON object with the following fields:
+          - identifier: a unique identifier for the links
+          `,
+  });
+
+  identifier = result.object;
+  return identifier;
+}
+
 if (fs.existsSync(path.join(currentCrawlDir, "identifier.json"))) {
   identifier = JSON.parse(
     await fs.promises.readFile(
@@ -96,28 +151,7 @@ if (fs.existsSync(path.join(currentCrawlDir, "identifier.json"))) {
     )
   );
 } else {
-  const result = await generateObject({
-    model: openai("gpt-4o-mini"),
-    schema: identifierSchema,
-    prompt: `Provide a unique identifier for the following links: ${orderInput
-      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
-      .join("\n")}
-      
-      The identifier should be a unique identifier for the links.
-      It should be a short string that is easy to remember.
-
-
-      Example:
-      {
-        "identifier": "tanstack-router-react-docs"
-      }
-  
-      Your output should be a JSON object with the following fields:
-      - identifier: a unique identifier for the links
-      `,
-  });
-
-  identifier = result.object;
+  identifier = await generateIdentifier(orderInput);
 
   await fs.promises.writeFile(
     path.join(currentCrawlDir, "identifier.json"),
@@ -137,9 +171,16 @@ type CategorySchema = z.infer<typeof categorySchema>;
 
 let categories: CategorySchema;
 
-async function categorizeSites(
-  sites: { url: string; title: string; description: string }[]
-) {
+function sanitizeCategories(categories: CategorySchema) {
+  return categories.categories.map((c) => ({
+    ...c,
+    refUrls: c.refUrls.filter((u) =>
+      crawlResult.data.find((d) => d.metadata?.url === u)
+    ),
+  }));
+}
+
+async function categorizeSites(sites: CrawledDocument[]) {
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
     schema: categorySchema,
@@ -168,42 +209,17 @@ if (fs.existsSync(path.join(currentCrawlDir, "original-categories.json"))) {
     )
   );
 } else {
-  // order these by semantic categories
-  const result = await generateObject({
-    model: openai("gpt-4o-mini"),
-    schema: categorySchema,
-    prompt: `Order the following links by semantic categories: ${orderInput
-      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
-      .join("\n")}
-    
-    Categories should be relavent to the content of the links.
-    We'll use the categories to concatenate the content of the links together.
-
-    Your output should be a JSON object with the following fields:
-    - categories: an array of objects with the following fields:
-      - category: the category of the link
-      - refUrls: an array of URLs that are related to the category
-    `,
-  });
-
-  //   console.log(result.object);
-  categories = result.object;
+  categories = await categorizeSites(orderInput);
 
   await fs.promises.writeFile(
     path.join(currentCrawlDir, "original-categories.json"),
-    JSON.stringify(result.object, null, 2)
+    JSON.stringify(categories, null, 2)
   );
 }
-categories.categories = categories.categories
-  .filter((c) => c.refUrls.length > 0)
-  .map((c) => ({
-    ...c,
-    refUrls: c.refUrls.filter((u) =>
-      crawlResult.data.find((d) => d.metadata?.url === u)
-    ),
-  }));
 
-async function categoriesSummary() {
+categories.categories = sanitizeCategories(categories);
+
+async function showCategoriesSummary() {
   const allTokens = estimateTokensForAllDocuments();
   console.log(
     chalk.green(
@@ -224,7 +240,7 @@ async function categoriesSummary() {
   }
 }
 
-categoriesSummary();
+showCategoriesSummary();
 
 async function viewExpandedCategories() {
   const categoryContent = categories.categories.map((c) => {
@@ -362,6 +378,39 @@ function estimateTokensForAllDocuments() {
   }, 0);
 }
 
+/**
+ * Moves the current crawl directory to the history directory
+ * Uses the identifier to name the new directory
+ */
+async function archiveCrawl() {
+  const historyDir = path.join(dataDir, "history");
+  ensureDirectory(historyDir);
+  const currentCrawlDir = path.join(dataDir, "current-crawl");
+
+  // Load identifier to use as directory name
+  const identifier = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "identifier.json"),
+      "utf-8"
+    )
+  );
+
+  // Create timestamped directory name
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const archiveDir = path.join(
+    historyDir,
+    `${identifier.identifier}-${timestamp}`
+  );
+
+  // Move current crawl to archive
+  await fs.promises.rename(currentCrawlDir, archiveDir);
+
+  // Create new empty current-crawl directory
+  ensureDirectory(currentCrawlDir);
+
+  console.log(chalk.green(`Archived crawl to ${archiveDir}`));
+}
+
 async function showProcessingMenu() {
   const { action } = await inquirer.prompt([
     {
@@ -372,14 +421,19 @@ async function showProcessingMenu() {
         { name: "View Documents Summary", value: "summary" },
         { name: "View & Prune Documents", value: "view" },
         { name: "Clean & Concat Documents", value: "concat" },
+        { name: "Archive This Crawl", value: "archive" },
         { name: "Exit", value: "exit" },
       ],
     },
   ]);
 
   switch (action) {
+    case "archive":
+      await archiveCrawl();
+      await showProcessingMenu();
+      break;
     case "summary":
-      categoriesSummary();
+      showCategoriesSummary();
       await showProcessingMenu();
       break;
     case "view":
@@ -421,12 +475,11 @@ async function showProcessingMenu() {
         break;
       }
 
+      const outputDir = path.join(currentCrawlDir, "output");
+      ensureDirectory(outputDir);
+
       if (concatAction === "single") {
-        const outputDir = path.join(currentCrawlDir, "output");
-        ensureDirectory(outputDir);
-
         const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
-
         fs.writeFileSync(outputPath, "");
 
         for (const category of categories.categories) {
@@ -434,32 +487,13 @@ async function showProcessingMenu() {
             outputPath,
             `# ${category.category}\n\n`
           );
-          for (const url of category.refUrls) {
-            const siteData = crawlResult.data.find(
-              (d) => d.metadata?.url === url
-            );
-            if (siteData?.metadata?.title && siteData?.metadata?.url) {
-              console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-              const cleanedContent = await cleanupMarkdownDocument(
-                siteData.markdown!
-              );
-              const title = `## ${siteData.metadata.title}`;
-              const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-              await fs.promises.appendFile(
-                outputPath,
-                `${title}\n${url}\n\n${cleanedContent}\n\n`
-              );
-            }
-          }
+          await processCategoryContent(category, outputPath);
         }
 
         console.log(
           chalk.green(`Documents concatenated and saved to ${outputPath}`)
         );
       } else {
-        const outputDir = path.join(currentCrawlDir, "output");
-        ensureDirectory(outputDir);
-
         for (const category of categories.categories) {
           const outputPath = path.join(
             outputDir,
@@ -468,24 +502,7 @@ async function showProcessingMenu() {
               .replace(/\s+/g, "-")}.md`
           );
           fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
-
-          for (const url of category.refUrls) {
-            const siteData = crawlResult.data.find(
-              (d) => d.metadata?.url === url
-            );
-            if (siteData?.metadata?.title && siteData?.metadata?.url) {
-              console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-              const cleanedContent = await cleanupMarkdownDocument(
-                siteData.markdown!
-              );
-              const title = `## ${siteData.metadata.title}`;
-              const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-              await fs.promises.appendFile(
-                outputPath,
-                `${title}\n${url}\n\n${cleanedContent}\n\n`
-              );
-            }
-          }
+          await processCategoryContent(category, outputPath);
         }
 
         console.log(
@@ -502,8 +519,32 @@ async function showProcessingMenu() {
   }
 }
 
-await showProcessingMenu();
+/**
+ * Processes the content of a category and appends it to the output file
+ * @param category - The category to process
+ * @param outputPath - The path to the output file
+ */
+async function processCategoryContent(category: any, outputPath: string) {
+  for (const url of category.refUrls) {
+    const siteData = crawlResult.data.find((d) => d.metadata?.url === url);
+    if (siteData?.metadata?.title && siteData?.metadata?.url) {
+      console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
+      const cleanedContent = await cleanupMarkdownDocument(siteData.markdown!);
+      const title = `## ${siteData.metadata.title}`;
+      const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
+      await fs.promises.appendFile(
+        outputPath,
+        `${title}\n${url}\n\n${cleanedContent}\n\n`
+      );
+    }
+  }
+}
 
+/**
+ * Cleans a markdown document by removing extranous markup, links, etc.
+ * @param document - The markdown document to clean
+ * @returns The cleaned markdown document
+ */
 async function cleanupMarkdownDocument(document: string) {
   const result = await generateText({
     model: openai("gpt-4o-mini"),
@@ -518,3 +559,5 @@ async function cleanupMarkdownDocument(document: string) {
   });
   return result.text;
 }
+
+await showProcessingMenu();
