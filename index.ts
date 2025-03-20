@@ -169,83 +169,6 @@ for (const category of categories.categories) {
   );
 }
 
-// console.log(cliMarkdown(formatted));
-
-async function pruneCategories() {
-  const { selectedCategories } = await inquirer.prompt([
-    {
-      type: "checkbox",
-      name: "selectedCategories",
-      message: "Select categories to prune:",
-      choices: [
-        ...categories.categories.map((c) => ({
-          name: `${c.category} (${c.refUrls.length} sites)`,
-          value: c.category,
-        })),
-        { name: "Cancel", value: "cancel" },
-      ],
-    },
-  ]);
-
-  if (
-    selectedCategories.includes("cancel") ||
-    selectedCategories.length === 0
-  ) {
-    console.log(chalk.yellow("Pruning cancelled."));
-    return;
-  }
-
-  for (const category of selectedCategories) {
-    const categoryData = categories.categories.find(
-      (c) => c.category === category
-    );
-    if (!categoryData) continue;
-
-    const { selectedSites } = await inquirer.prompt([
-      {
-        type: "checkbox",
-        name: "selectedSites",
-        message: `Select sites to remove from ${category}:`,
-        choices: [
-          ...categoryData.refUrls.map((url) => {
-            const siteData = crawlResult.data.find(
-              (d) => d.metadata?.url === url
-            );
-            return {
-              name: `${siteData?.metadata?.title || url}\n${url}`,
-              value: url,
-            };
-          }),
-          { name: "Skip this category", value: "skip" },
-        ],
-      },
-    ]);
-
-    if (selectedSites.includes("skip")) {
-      console.log(chalk.yellow(`Skipping category: ${category}`));
-      continue;
-    }
-
-    // Remove selected sites from the category
-    categoryData.refUrls = categoryData.refUrls.filter(
-      (url) => !selectedSites.includes(url)
-    );
-  }
-
-  // Remove empty categories
-  categories.categories = categories.categories.filter(
-    (c) => c.refUrls.length > 0
-  );
-
-  // Save pruned categories
-  await Bun.write(
-    path.join(currentCrawlDir, "finalized-categories.json"),
-    JSON.stringify(categories, null, 2)
-  );
-
-  console.log(chalk.green("Categories pruned successfully!"));
-}
-
 async function viewExpandedCategories() {
   const categoryContent = categories.categories.map((c) => {
     const title = `## ${c.category}`;
@@ -372,10 +295,9 @@ async function showMainMenu() {
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { name: "View Category Summary", value: "summary" },
-        { name: "View Expanded Categories", value: "view" },
-        { name: "Keep All Categories", value: "keep" },
-        { name: "Prune Categories", value: "prune" },
+        { name: "View Documents Summary", value: "summary" },
+        { name: "View & Prune Documents", value: "view" },
+        { name: "Clean & Concat Documents", value: "concat" },
         { name: "Exit", value: "exit" },
       ],
     },
@@ -384,7 +306,9 @@ async function showMainMenu() {
   switch (action) {
     case "summary":
       console.log(
-        chalk.green(`Categories found ${categories.categories.length}`)
+        chalk.green(
+          `Documents found ${crawlResult.data.length} - Categories found ${categories.categories.length}`
+        )
       );
       for (const category of categories.categories) {
         console.log(
@@ -399,12 +323,42 @@ async function showMainMenu() {
       await viewExpandedCategories();
       await showMainMenu();
       break;
-    case "keep":
-      // NoOp for now
-      console.log(chalk.green("Keeping all categories..."));
-      break;
-    case "prune":
-      await pruneCategories();
+    case "concat":
+      const outputPath = path.join(
+        currentCrawlDir,
+        `${identifier.identifier}.md`
+      );
+
+      for (const category of categories.categories) {
+        Bun.write(outputPath, `# ${category.category}\n\n`, {
+          mode: "a",
+        });
+        for (const url of category.refUrls) {
+          const siteData = crawlResult.data.find(
+            (d) => d.metadata?.url === url
+          );
+          if (siteData?.metadata?.title && siteData?.metadata?.url) {
+            const cleanedContent = await cleanDocument({
+              title: siteData.metadata.title,
+              url: siteData.metadata.url,
+              content: siteData.markdown!,
+            });
+            const title = `## ${siteData.metadata.title}`;
+            const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
+            Bun.write(
+              outputPath,
+              `## ${title}\n${url}\n\n${cleanedContent}\n\n`,
+              {
+                mode: "a",
+              }
+            );
+          }
+        }
+      }
+
+      console.log(
+        chalk.green(`Documents concatenated and saved to ${outputPath}`)
+      );
       await showMainMenu();
       break;
     case "exit":
@@ -427,4 +381,19 @@ function concatDocuments(documents: MarkdownDocument[]) {
     .map((d) => [`## ${d.title}`, `[${d.url}](${d.url})`, d.content].join("\n"))
     .join("\n\n");
   return content;
+}
+
+async function cleanDocument(document: MarkdownDocument) {
+  const result = await generateText({
+    model: openai("gpt-4o-mini"),
+    prompt: `Clean the following document. Remove extranous markup, links, etc. Keep only the content that is relevant to the topic such as explanations, code examples, etc: 
+
+    Please return the cleaned content as a markdown document. Do not include any other text or markup.
+   
+    <content>
+    ${document.content}
+    </content>
+    `,
+  });
+  return result.text;
 }
