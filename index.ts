@@ -1,4 +1,6 @@
-import { crawl } from "./lib/firecrawl";
+#!/usr/bin/env node
+
+import { crawl } from "./lib/firecrawl.js";
 import { generateObject, generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
@@ -12,6 +14,9 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import { url } from "node:inspector";
 import boxen from "boxen";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const dataDir = ".data";
 const currentCrawlDir = path.join(dataDir, "current-crawl");
@@ -51,14 +56,14 @@ const openaiApiKey = (argv["openai-key"] ||
 
 if (!firecrawlApiKey) {
   console.error(
-    "Please provide an API key for Firecrawl either as an argument or as an environment variable"
+    "Please provide an API key for Firecrawl either as an argument with --firecrawl-key or as an environment variable"
   );
   process.exit(1);
 }
 
 if (!openaiApiKey) {
   console.error(
-    "Please provide an API key for OpenAI either as an argument or as an environment variable"
+    "Please provide an API key for OpenAI either as an argument with --openai-key or as an environment variable"
   );
   process.exit(1);
 }
@@ -298,6 +303,11 @@ async function archiveCrawl() {
   console.log(chalk.green(`Archived crawl to ${archiveDir}`));
 }
 
+async function deleteCurrentCrawl() {
+  await fs.promises.rm(currentCrawlDir, { recursive: true });
+  console.log(chalk.green(`Deleted current crawl`));
+}
+
 async function startNewCrawl() {
   const currentCrawlId = await getCurrentCrawlIdIfAny();
   if (currentCrawlId) {
@@ -313,8 +323,9 @@ async function startNewCrawl() {
         name: "action",
         message: "What would you like to do?",
         choices: [
-          { name: "Archive & Start New Crawl", value: "archive" },
           { name: "Continue from Previous Crawl", value: "continue" },
+          { name: "Archive & Start New Crawl", value: "archive" },
+          { name: "Delete & Start New Crawl", value: "delete" },
           { name: "Cancel", value: "cancel" },
         ],
       },
@@ -322,6 +333,11 @@ async function startNewCrawl() {
 
     if (action === "archive") {
       await archiveCrawl();
+      return;
+    }
+
+    if (action === "delete") {
+      await deleteCurrentCrawl();
       return;
     }
 
@@ -357,6 +373,7 @@ async function startNewCrawl() {
     },
   ]);
 
+  console.log(chalk.blue(`Crawling ${url} with limit ${limit}...`));
   const urlString = url as string;
   crawlResult = await crawl(
     urlString,
@@ -524,6 +541,11 @@ async function showMainMenu() {
             "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
           ),
         { padding: 1 }
+      )
+    );
+    console.log(
+      chalk.yellow(
+        "Warning: This is alpha software. It is not ready for production use."
       )
     );
 

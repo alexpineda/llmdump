@@ -1,5 +1,5 @@
 import FirecrawlApp, { type ScrapeResponse } from "@mendable/firecrawl-js";
-import { withRetry } from "./util";
+import { withRetry } from "./util.js";
 
 /**
  * Scrapes a url and returns the markdown
