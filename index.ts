@@ -10,6 +10,7 @@ import { hideBin } from "yargs/helpers";
 import cliMarkdown from "cli-markdown";
 import chalk from "chalk";
 import inquirer from "inquirer";
+import { url } from "node:inspector";
 
 const dataDir = ".data";
 const currentCrawlDir = path.join(dataDir, "current-crawl");
@@ -161,13 +162,31 @@ if (fs.existsSync(path.join(currentCrawlDir, "categories.json"))) {
     JSON.stringify(result.object, null, 2)
   );
 }
+categories.categories = categories.categories
+  .filter((c) => c.refUrls.length > 0)
+  .map((c) => ({
+    ...c,
+    refUrls: c.refUrls.filter((u) =>
+      crawlResult.data.find((d) => d.metadata?.url === u)
+    ),
+  }));
 
-console.log(chalk.green(`Categories found ${categories.categories.length}`));
-for (const category of categories.categories) {
+function categoriesSummary() {
   console.log(
-    chalk.green(`Category: ${category.category} (${category.refUrls.length})`)
+    chalk.green(
+      `Documents found ${
+        categories.categories.flatMap((c) => c.refUrls).length
+      } - Categories found ${categories.categories.length}`
+    )
   );
+  for (const category of categories.categories) {
+    console.log(
+      chalk.green(`Category: ${category.category} (${category.refUrls.length})`)
+    );
+  }
 }
+
+categoriesSummary();
 
 async function viewExpandedCategories() {
   const categoryContent = categories.categories.map((c) => {
@@ -305,18 +324,7 @@ async function showMainMenu() {
 
   switch (action) {
     case "summary":
-      console.log(
-        chalk.green(
-          `Documents found ${crawlResult.data.length} - Categories found ${categories.categories.length}`
-        )
-      );
-      for (const category of categories.categories) {
-        console.log(
-          chalk.green(
-            `Category: ${category.category} (${category.refUrls.length})`
-          )
-        );
-      }
+      categoriesSummary();
       await showMainMenu();
       break;
     case "view":
@@ -329,15 +337,16 @@ async function showMainMenu() {
         `${identifier.identifier}.md`
       );
 
+      fs.writeFileSync(outputPath, "");
+
       for (const category of categories.categories) {
-        Bun.write(outputPath, `# ${category.category}\n\n`, {
-          mode: "a",
-        });
+        await fs.promises.appendFile(outputPath, `# ${category.category}\n\n`);
         for (const url of category.refUrls) {
           const siteData = crawlResult.data.find(
             (d) => d.metadata?.url === url
           );
           if (siteData?.metadata?.title && siteData?.metadata?.url) {
+            console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
             const cleanedContent = await cleanDocument({
               title: siteData.metadata.title,
               url: siteData.metadata.url,
@@ -345,12 +354,9 @@ async function showMainMenu() {
             });
             const title = `## ${siteData.metadata.title}`;
             const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-            Bun.write(
+            await fs.promises.appendFile(
               outputPath,
-              `## ${title}\n${url}\n\n${cleanedContent}\n\n`,
-              {
-                mode: "a",
-              }
+              `${title}\n${url}\n\n${cleanedContent}\n\n`
             );
           }
         }
