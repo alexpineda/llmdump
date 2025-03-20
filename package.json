@@ -1,5 +1,6 @@
 {
   "name": "llmdump",
+  "description": "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs",
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
