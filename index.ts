@@ -260,6 +260,56 @@ async function pruneCategories() {
   console.log(chalk.green("Categories pruned successfully!"));
 }
 
+async function viewExpandedCategories() {
+  const categoryContent = categories.categories.map((c) => {
+    const title = `## ${c.category}`;
+    const formattedSiteData = c.refUrls.map((u) => {
+      const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
+      const description = `**Description:** ${siteData?.metadata?.description}`;
+      const url = `**URL:** ${siteData?.metadata?.url}`;
+      return `${url}\n\n${description}\n`;
+    });
+    return `${title}\n${formattedSiteData.join("\n")}`;
+  });
+
+  let currentIndex = 0;
+  let done = false;
+
+  while (!done) {
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: "Navigation",
+        choices: [
+          { name: "Next Page", value: "next" },
+          { name: "Previous Page", value: "prev" },
+          { name: "Back to Menu", value: "back" },
+        ],
+        pageSize: 10,
+      },
+    ]);
+
+    switch (action) {
+      case "next":
+        currentIndex = Math.min(currentIndex + 1, categoryContent.length - 1);
+        break;
+      case "prev":
+        currentIndex = Math.max(currentIndex - 1, 0);
+        break;
+      case "back":
+        done = true;
+        break;
+    }
+
+    if (!done) {
+      console.clear();
+      console.log(cliMarkdown(categoryContent[currentIndex]));
+      console.log(`\nPage ${currentIndex + 1} of ${categoryContent.length}`);
+    }
+  }
+}
+
 async function showMainMenu() {
   const { action } = await inquirer.prompt([
     {
@@ -291,8 +341,8 @@ async function showMainMenu() {
       await showMainMenu();
       break;
     case "view":
-      console.log(cliMarkdown(formatted));
-      await showMainMenu(); // Show menu again after viewing
+      await viewExpandedCategories();
+      await showMainMenu();
       break;
     case "keep":
       // NoOp for now
