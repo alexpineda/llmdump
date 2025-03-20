@@ -9,6 +9,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import cliMarkdown from "cli-markdown";
 import chalk from "chalk";
+import inquirer from "inquirer";
 
 const dataDir = ".data";
 const currentCrawlDir = path.join(dataDir, "current-crawl");
@@ -183,3 +184,129 @@ const formatted = categories.categories
   .join("\n");
 
 // console.log(cliMarkdown(formatted));
+
+async function pruneCategories() {
+  const { selectedCategories } = await inquirer.prompt([
+    {
+      type: "checkbox",
+      name: "selectedCategories",
+      message: "Select categories to prune:",
+      choices: [
+        ...categories.categories.map((c) => ({
+          name: `${c.category} (${c.refUrls.length} sites)`,
+          value: c.category,
+        })),
+        { name: "Cancel", value: "cancel" },
+      ],
+    },
+  ]);
+
+  if (
+    selectedCategories.includes("cancel") ||
+    selectedCategories.length === 0
+  ) {
+    console.log(chalk.yellow("Pruning cancelled."));
+    return;
+  }
+
+  for (const category of selectedCategories) {
+    const categoryData = categories.categories.find(
+      (c) => c.category === category
+    );
+    if (!categoryData) continue;
+
+    const { selectedSites } = await inquirer.prompt([
+      {
+        type: "checkbox",
+        name: "selectedSites",
+        message: `Select sites to remove from ${category}:`,
+        choices: [
+          ...categoryData.refUrls.map((url) => {
+            const siteData = crawlResult.data.find(
+              (d) => d.metadata?.url === url
+            );
+            return {
+              name: `${siteData?.metadata?.title || url}\n${url}`,
+              value: url,
+            };
+          }),
+          { name: "Skip this category", value: "skip" },
+        ],
+      },
+    ]);
+
+    if (selectedSites.includes("skip")) {
+      console.log(chalk.yellow(`Skipping category: ${category}`));
+      continue;
+    }
+
+    // Remove selected sites from the category
+    categoryData.refUrls = categoryData.refUrls.filter(
+      (url) => !selectedSites.includes(url)
+    );
+  }
+
+  // Remove empty categories
+  categories.categories = categories.categories.filter(
+    (c) => c.refUrls.length > 0
+  );
+
+  // Save pruned categories
+  await Bun.write(
+    path.join(currentCrawlDir, "finalized-categories.json"),
+    JSON.stringify(categories, null, 2)
+  );
+
+  console.log(chalk.green("Categories pruned successfully!"));
+}
+
+async function showMainMenu() {
+  const { action } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "action",
+      message: "What would you like to do?",
+      choices: [
+        { name: "View Category Summary", value: "summary" },
+        { name: "View Expanded Categories", value: "view" },
+        { name: "Keep All Categories", value: "keep" },
+        { name: "Prune Categories", value: "prune" },
+        { name: "Exit", value: "exit" },
+      ],
+    },
+  ]);
+
+  switch (action) {
+    case "summary":
+      console.log(
+        chalk.green(`Categories found ${categories.categories.length}`)
+      );
+      for (const category of categories.categories) {
+        console.log(
+          chalk.green(
+            `Category: ${category.category} (${category.refUrls.length})`
+          )
+        );
+      }
+      await showMainMenu();
+      break;
+    case "view":
+      console.log(cliMarkdown(formatted));
+      await showMainMenu(); // Show menu again after viewing
+      break;
+    case "keep":
+      // NoOp for now
+      console.log(chalk.green("Keeping all categories..."));
+      break;
+    case "prune":
+      await pruneCategories();
+      await showMainMenu();
+      break;
+    case "exit":
+      console.log(chalk.blue("Goodbye!"));
+      process.exit(0);
+      break;
+  }
+}
+
+await showMainMenu();
