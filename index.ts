@@ -265,25 +265,33 @@ async function viewExpandedCategories() {
     const title = `## ${c.category}`;
     const formattedSiteData = c.refUrls.map((u) => {
       const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
-      const description = `**Description:** ${siteData?.metadata?.description}`;
-      const url = `**URL:** ${siteData?.metadata?.url}`;
-      return `${url}\n\n${description}\n`;
+      const title = `**${siteData?.metadata?.title}**`;
+      const description = `${
+        siteData?.metadata?.description || "No description"
+      }`;
+      const url = `*${siteData?.metadata?.url}*`;
+      return `${title}\n${url}\n\n${description}\n`;
     });
-    return `${title}\n${formattedSiteData.join("\n")}`;
+    return `${title}\n${formattedSiteData.join("\n\n")}`;
   });
 
   let currentIndex = 0;
   let done = false;
 
   while (!done) {
+    const currentCategory = categories.categories[currentIndex];
     const { action } = await inquirer.prompt([
       {
         type: "list",
         name: "action",
-        message: "Navigation",
+        message: `Navigation - ${currentCategory.category}`,
         choices: [
           { name: "Next Page", value: "next" },
           { name: "Previous Page", value: "prev" },
+          {
+            name: `Prune Sites from ${currentCategory.category}`,
+            value: "prune",
+          },
           { name: "Back to Menu", value: "back" },
         ],
         pageSize: 10,
@@ -296,6 +304,68 @@ async function viewExpandedCategories() {
         break;
       case "prev":
         currentIndex = Math.max(currentIndex - 1, 0);
+        break;
+      case "prune":
+        const { selectedSites } = await inquirer.prompt([
+          {
+            type: "checkbox",
+            name: "selectedSites",
+            message: `Select sites to remove from ${currentCategory.category}:`,
+            choices: [
+              ...currentCategory.refUrls.map((url) => {
+                const siteData = crawlResult.data.find(
+                  (d) => d.metadata?.url === url
+                );
+                return {
+                  name: `${siteData?.metadata?.title || url}\n${url}`,
+                  value: url,
+                };
+              }),
+              { name: "Cancel", value: "cancel" },
+            ],
+          },
+        ]);
+
+        if (selectedSites.includes("cancel")) {
+          console.log(chalk.yellow("Pruning cancelled."));
+          break;
+        }
+
+        // Remove selected sites from the category
+        currentCategory.refUrls = currentCategory.refUrls.filter(
+          (url) => !selectedSites.includes(url)
+        );
+
+        // Update the content for this category
+        categoryContent[currentIndex] = `## ${
+          currentCategory.category
+        }\n${currentCategory.refUrls
+          .map((u) => {
+            const siteData = crawlResult.data.find(
+              (d) => d.metadata?.url === u
+            );
+            const description = `**Description:** ${siteData?.metadata?.description}`;
+            const url = `**URL:** ${siteData?.metadata?.url}`;
+            return `${url}\n\n${description}\n`;
+          })
+          .join("\n")}`;
+
+        // Remove empty categories
+        if (currentCategory.refUrls.length === 0) {
+          categories.categories = categories.categories.filter(
+            (c) => c.refUrls.length > 0
+          );
+          categoryContent.splice(currentIndex, 1);
+          currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+        }
+
+        // Save pruned categories
+        await Bun.write(
+          path.join(currentCrawlDir, "finalized-categories.json"),
+          JSON.stringify(categories, null, 2)
+        );
+
+        console.log(chalk.green("Sites pruned successfully!"));
         break;
       case "back":
         done = true;
