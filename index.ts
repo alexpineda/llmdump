@@ -11,6 +11,7 @@ import cliMarkdown from "cli-markdown";
 import chalk from "chalk";
 import inquirer from "inquirer";
 import { url } from "node:inspector";
+import boxen from "boxen";
 
 const dataDir = ".data";
 const currentCrawlDir = path.join(dataDir, "current-crawl");
@@ -27,20 +28,10 @@ ensureDirectory(currentCrawlDir);
 ensureDirectory(historyDir);
 
 let crawlResult: CrawlStatusResponse;
+let categories: CategorySchema;
+let identifier: IdentifierSchema;
 
 const argv = yargs(hideBin(process.argv))
-  .option("crawlUrl", {
-    type: "string",
-    description: "The URL to crawl",
-    required: true,
-    alias: "u",
-  })
-  .option("limit", {
-    type: "number",
-    alias: "l",
-    description: "The number of pages to crawl",
-    default: 10,
-  })
   .option("firecrawl-key", {
     type: "string",
     alias: "k",
@@ -53,8 +44,10 @@ const argv = yargs(hideBin(process.argv))
   })
   .parseSync();
 
-const firecrawlApiKey = argv["firecrawl-key"] || process.env.FIRECRAWL_API_KEY;
-const openaiApiKey = argv["openai-key"] || process.env.OPENAI_API_KEY;
+const firecrawlApiKey = (argv["firecrawl-key"] ||
+  process.env.FIRECRAWL_API_KEY) as string;
+const openaiApiKey = (argv["openai-key"] ||
+  process.env.OPENAI_API_KEY) as string;
 
 if (!firecrawlApiKey) {
   console.error(
@@ -74,38 +67,12 @@ const openai = createOpenAI({
   apiKey: openaiApiKey,
 });
 
-if (fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"))) {
-  crawlResult = JSON.parse(
-    await fs.promises.readFile(
-      path.join(currentCrawlDir, "crawlResult.json"),
-      "utf-8"
-    )
-  );
-} else {
-  crawlResult = await crawl(
-    argv.crawlUrl,
-    { limit: argv.limit },
-    firecrawlApiKey
-  );
-  await fs.promises.writeFile(
-    path.join(currentCrawlDir, "crawlResult.json"),
-    JSON.stringify(crawlResult, null, 2)
-  );
-}
-
 type CrawledDocument = {
   url: string;
   title: string;
   description: string;
   content: string;
 };
-
-const orderInput: CrawledDocument[] = crawlResult.data.map((d: any) => ({
-  url: d.metadata.url,
-  title: d.metadata.title,
-  description: d.metadata.description,
-  content: d.markdown || "",
-}));
 
 // console.log(orderInput);
 
@@ -115,7 +82,48 @@ const identifierSchema = z.object({
 
 type IdentifierSchema = z.infer<typeof identifierSchema>;
 
-let identifier: IdentifierSchema;
+const categorySchema = z.object({
+  categories: z.array(
+    z.object({
+      category: z.string(),
+      refUrls: z.array(z.string()),
+    })
+  ),
+});
+
+type CategorySchema = z.infer<typeof categorySchema>;
+
+// -- UTILITY FUNCTIONS --
+
+function sanitizeCategories(categories: CategorySchema) {
+  return categories.categories.map((c) => ({
+    ...c,
+    refUrls: c.refUrls.filter((u) =>
+      crawlResult.data.find((d) => d.metadata?.url === u)
+    ),
+  }));
+}
+
+async function categorizeSites(sites: CrawledDocument[]) {
+  const result = await generateObject({
+    model: openai("gpt-4o-mini"),
+    schema: categorySchema,
+    prompt: `Order the following links by semantic categories: ${sites
+      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
+      .join("\n")}
+          
+          Categories should be relavent to the content of the links.
+          We'll use the categories to concatenate the content of the links together.
+      
+          Your output should be a JSON object with the following fields:
+          - categories: an array of objects with the following fields:
+            - category: the category of the link
+            - refUrls: an array of URLs that are related to the category
+          `,
+  });
+
+  return result.object;
+}
 
 async function generateIdentifier(documents: CrawledDocument[]) {
   const result = await generateObject({
@@ -142,83 +150,26 @@ async function generateIdentifier(documents: CrawledDocument[]) {
   identifier = result.object;
   return identifier;
 }
-
-if (fs.existsSync(path.join(currentCrawlDir, "identifier.json"))) {
-  identifier = JSON.parse(
-    await fs.promises.readFile(
-      path.join(currentCrawlDir, "identifier.json"),
-      "utf-8"
-    )
-  );
-} else {
-  identifier = await generateIdentifier(orderInput);
-
-  await fs.promises.writeFile(
-    path.join(currentCrawlDir, "identifier.json"),
-    JSON.stringify(identifier, null, 2)
-  );
-}
-const categorySchema = z.object({
-  categories: z.array(
-    z.object({
-      category: z.string(),
-      refUrls: z.array(z.string()),
-    })
-  ),
-});
-
-type CategorySchema = z.infer<typeof categorySchema>;
-
-let categories: CategorySchema;
-
-function sanitizeCategories(categories: CategorySchema) {
-  return categories.categories.map((c) => ({
-    ...c,
-    refUrls: c.refUrls.filter((u) =>
-      crawlResult.data.find((d) => d.metadata?.url === u)
-    ),
-  }));
+function estimateTokens(content: string) {
+  return Math.ceil(content.length / 4);
 }
 
-async function categorizeSites(sites: CrawledDocument[]) {
-  const result = await generateObject({
-    model: openai("gpt-4o-mini"),
-    schema: categorySchema,
-    prompt: `Order the following links by semantic categories: ${sites
-      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
-      .join("\n")}
-        
-        Categories should be relavent to the content of the links.
-        We'll use the categories to concatenate the content of the links together.
-    
-        Your output should be a JSON object with the following fields:
-        - categories: an array of objects with the following fields:
-          - category: the category of the link
-          - refUrls: an array of URLs that are related to the category
-        `,
-  });
-
-  return result.object;
+function estimateTokensForCategory(category: any) {
+  return category.refUrls.reduce((acc: number, u: any) => {
+    const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
+    return acc + estimateTokens(siteData?.markdown ?? "");
+  }, 0);
 }
 
-if (fs.existsSync(path.join(currentCrawlDir, "original-categories.json"))) {
-  categories = JSON.parse(
-    await fs.promises.readFile(
-      path.join(currentCrawlDir, "original-categories.json"),
-      "utf-8"
-    )
-  );
-} else {
-  categories = await categorizeSites(orderInput);
-
-  await fs.promises.writeFile(
-    path.join(currentCrawlDir, "original-categories.json"),
-    JSON.stringify(categories, null, 2)
-  );
+function estimateTokensForAllDocuments() {
+  return categories.categories.reduce((acc: number, c: any) => {
+    return acc + estimateTokensForCategory(c);
+  }, 0);
 }
 
-categories.categories = sanitizeCategories(categories);
-
+/**
+ * Shows a summary of the categories and the number of tokens in each category
+ */
 async function showCategoriesSummary() {
   const allTokens = estimateTokensForAllDocuments();
   console.log(
@@ -240,8 +191,466 @@ async function showCategoriesSummary() {
   }
 }
 
-showCategoriesSummary();
+/**
+ * Processes the content of a category and appends it to the output file
+ * @param category - The category to process
+ * @param outputPath - The path to the output file
+ */
+async function processCategoryContent(category: any, outputPath: string) {
+  for (const url of category.refUrls) {
+    const siteData = crawlResult.data.find((d) => d.metadata?.url === url);
+    if (siteData?.metadata?.title && siteData?.metadata?.url) {
+      console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
+      const cleanedContent = await cleanupMarkdownDocument(siteData.markdown!);
+      const title = `## ${siteData.metadata.title}`;
+      const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
+      await fs.promises.appendFile(
+        outputPath,
+        `${title}\n${url}\n\n${cleanedContent}\n\n`
+      );
+    }
+  }
+}
 
+/**
+ * Cleans a markdown document by removing extranous markup, links, etc.
+ * @param document - The markdown document to clean
+ * @returns The cleaned markdown document
+ */
+async function cleanupMarkdownDocument(document: string) {
+  const result = await generateText({
+    model: openai("gpt-4o-mini"),
+    prompt: `Clean the following document. Remove extranous markup, links, etc. Keep only the content that is relevant to the topic such as explanations, code examples, etc: 
+
+    Please return the cleaned content as a markdown document. Do not include any other text or markup.
+   
+    <content>
+    ${document}
+    </content>
+    `,
+  });
+  return result.text;
+}
+
+async function run_terminal_cmd(command: string) {
+  const { exec } = await import("child_process");
+  return new Promise((resolve, reject) => {
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+// -- MAIN LOGIC --
+
+async function hasCurrentCrawl() {
+  return fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"));
+}
+
+/**
+ * Moves the current crawl directory to the history directory
+ * Uses the identifier to name the new directory
+ */
+async function archiveCrawl() {
+  const historyDir = path.join(dataDir, "history");
+  ensureDirectory(historyDir);
+  const currentCrawlDir = path.join(dataDir, "current-crawl");
+
+  // Load identifier to use as directory name
+  const identifier = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "identifier.json"),
+      "utf-8"
+    )
+  );
+
+  // Create timestamped directory name
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const archiveDir = path.join(
+    historyDir,
+    `${identifier.identifier}-${timestamp}`
+  );
+
+  // Move current crawl to archive
+  await fs.promises.rename(currentCrawlDir, archiveDir);
+
+  // Create new empty current-crawl directory
+  ensureDirectory(currentCrawlDir);
+
+  console.log(chalk.green(`Archived crawl to ${archiveDir}`));
+}
+
+async function startNewCrawl() {
+  if (await hasCurrentCrawl()) {
+    console.log(chalk.yellow("A current crawl already exists."));
+    // inquirer to archive current crawl or continue from it
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: "What would you like to do?",
+        choices: [
+          { name: "Archive & Start New Crawl", value: "archive" },
+          { name: "Continue from Previous Crawl", value: "continue" },
+        ],
+      },
+    ]);
+
+    if (action === "archive") {
+      await archiveCrawl();
+      return;
+    }
+
+    if (action === "continue") {
+      await continueFromCurrentCrawl();
+      return;
+    }
+  }
+
+  const { url, limit } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "url",
+      message: "Enter the URL to crawl:",
+      validate: (input: string) => {
+        try {
+          new URL(input);
+          return true;
+        } catch {
+          return "Please enter a valid URL";
+        }
+      },
+    },
+    {
+      type: "number",
+      name: "limit",
+      message: "Enter the number of pages to crawl:",
+      default: 10,
+    },
+  ]);
+
+  const urlString = url as string;
+  crawlResult = await crawl(
+    urlString,
+    { limit: limit as number },
+    firecrawlApiKey
+  );
+  await fs.promises.writeFile(
+    path.join(currentCrawlDir, "crawlResult.json"),
+    JSON.stringify(crawlResult, null, 2)
+  );
+
+  const orderInput: CrawledDocument[] = crawlResult.data.map((d: any) => ({
+    url: d.metadata.url,
+    title: d.metadata.title,
+    description: d.metadata.description,
+    content: d.markdown || "",
+  }));
+
+  identifier = await generateIdentifier(orderInput);
+  await fs.promises.writeFile(
+    path.join(currentCrawlDir, "identifier.json"),
+    JSON.stringify(identifier, null, 2)
+  );
+
+  categories = await categorizeSites(orderInput);
+  await fs.promises.writeFile(
+    path.join(currentCrawlDir, "original-categories.json"),
+    JSON.stringify(categories, null, 2)
+  );
+
+  categories.categories = sanitizeCategories(categories);
+  await showProcessingMenu();
+}
+
+async function continueFromCurrentCrawl() {
+  if (!fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"))) {
+    console.log(
+      chalk.red("No current crawl found. Please start a new crawl first.")
+    );
+    return;
+  }
+
+  crawlResult = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "crawlResult.json"),
+      "utf-8"
+    )
+  );
+
+  identifier = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "identifier.json"),
+      "utf-8"
+    )
+  );
+
+  categories = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "original-categories.json"),
+      "utf-8"
+    )
+  );
+
+  categories.categories = sanitizeCategories(categories);
+  await showProcessingMenu();
+}
+
+async function viewArchivedCrawls() {
+  const archives = await fs.promises.readdir(historyDir);
+  if (archives.length === 0) {
+    console.log(chalk.yellow("No archived crawls found."));
+    return;
+  }
+
+  const { selectedArchive } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "selectedArchive",
+      message: "Select an archived crawl to view:",
+      choices: archives,
+    },
+  ]);
+
+  const archivePath = path.join(historyDir, selectedArchive);
+  const archiveFiles = await fs.promises.readdir(archivePath);
+
+  console.log(chalk.green(`\nContents of ${selectedArchive}:`));
+  for (const file of archiveFiles) {
+    console.log(chalk.blue(`- ${file}`));
+  }
+}
+
+async function deleteArchivedCrawl() {
+  const archives = await fs.promises.readdir(historyDir);
+  if (archives.length === 0) {
+    console.log(chalk.yellow("No archived crawls found."));
+    return;
+  }
+
+  const { selectedArchive } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "selectedArchive",
+      message: "Select an archived crawl to delete:",
+      choices: archives,
+    },
+  ]);
+
+  const { confirm } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "confirm",
+      message: `Are you sure you want to delete ${selectedArchive}?`,
+    },
+  ]);
+
+  if (confirm) {
+    await fs.promises.rm(path.join(historyDir, selectedArchive), {
+      recursive: true,
+    });
+    console.log(chalk.green(`Successfully deleted ${selectedArchive}`));
+  }
+}
+
+async function openDataDirectory() {
+  const { platform } = process;
+  let command = "";
+
+  switch (platform) {
+    case "darwin":
+      command = "open";
+      break;
+    case "win32":
+      command = "explorer";
+      break;
+    default:
+      command = "xdg-open";
+  }
+
+  await run_terminal_cmd(`${command} ${dataDir}`);
+}
+
+// -- MENUS --
+
+/**
+ * Shows a menu for the main menu
+ * This menu is shown when the application starts
+ */
+async function showMainMenu() {
+  while (true) {
+    console.clear();
+    console.log(
+      boxen(
+        chalk.blue("LLMDump") +
+          "\n" +
+          chalk.gray(
+            "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
+          ),
+        { padding: 1 }
+      )
+    );
+
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: "What would you like to do?",
+        choices: [
+          { name: "Start New Crawl", value: "new" },
+          { name: "Continue from Current Crawl", value: "continue" },
+          { name: "View Archived Crawls", value: "view" },
+          { name: "Delete an Archived Crawl", value: "delete" },
+          { name: "Open Data Directory", value: "open" },
+          { name: "Exit", value: "exit" },
+        ],
+      },
+    ]);
+
+    switch (action) {
+      case "new":
+        await startNewCrawl();
+        break;
+      case "continue":
+        await continueFromCurrentCrawl();
+        break;
+      case "view":
+        await viewArchivedCrawls();
+        break;
+      case "delete":
+        await deleteArchivedCrawl();
+        break;
+      case "open":
+        await openDataDirectory();
+        break;
+      case "exit":
+        console.log(chalk.blue("Goodbye!"));
+        process.exit(0);
+        break;
+    }
+  }
+}
+
+/**
+ * Shows a menu for processing the documents
+ * This menu is shown after the initial crawl and categorization
+ */
+async function showProcessingMenu() {
+  const { action } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "action",
+      message: "What would you like to do?",
+      choices: [
+        { name: "View Documents Summary", value: "summary" },
+        { name: "View & Prune Documents", value: "view" },
+        { name: "Clean & Concat Documents", value: "concat" },
+        { name: "Archive This Crawl", value: "archive" },
+        { name: "Exit", value: "exit" },
+      ],
+    },
+  ]);
+
+  switch (action) {
+    case "archive":
+      await archiveCrawl();
+      await showProcessingMenu();
+      break;
+    case "summary":
+      showCategoriesSummary();
+      await showProcessingMenu();
+      break;
+    case "view":
+      await viewExpandedCategories();
+      await showProcessingMenu();
+      break;
+    case "concat":
+      const allContentLength = estimateTokensForAllDocuments();
+
+      const averageContentLength = Math.ceil(
+        allContentLength / categories.categories.length
+      );
+
+      const { concatAction } = await inquirer.prompt([
+        {
+          type: "list",
+          name: "concatAction",
+          message: "How would you like to concatenate the documents?",
+          choices: [
+            {
+              name:
+                "All to one file (estimated tokens: " + allContentLength + ")",
+              value: "single",
+            },
+            {
+              name:
+                "One file per category (avg est. tokens: " +
+                averageContentLength +
+                ")",
+              value: "multiple",
+            },
+            { name: "Back", value: "back" },
+          ],
+        },
+      ]);
+
+      if (concatAction === "back") {
+        await showProcessingMenu();
+        break;
+      }
+
+      const outputDir = path.join(currentCrawlDir, "output");
+      ensureDirectory(outputDir);
+
+      if (concatAction === "single") {
+        const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
+        fs.writeFileSync(outputPath, "");
+
+        for (const category of categories.categories) {
+          await fs.promises.appendFile(
+            outputPath,
+            `# ${category.category}\n\n`
+          );
+          await processCategoryContent(category, outputPath);
+        }
+
+        console.log(
+          chalk.green(`Documents concatenated and saved to ${outputPath}`)
+        );
+      } else {
+        for (const category of categories.categories) {
+          const outputPath = path.join(
+            outputDir,
+            `${identifier.identifier}-${category.category
+              .toLowerCase()
+              .replace(/\s+/g, "-")}.md`
+          );
+          fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
+          await processCategoryContent(category, outputPath);
+        }
+
+        console.log(
+          chalk.green(`Documents concatenated and saved to ${outputDir}`)
+        );
+      }
+
+      await showProcessingMenu();
+      break;
+    case "exit":
+      console.log(chalk.blue("Goodbye!"));
+      process.exit(0);
+      break;
+  }
+}
+
+/**
+ * Shows a menu for viewing the expanded categories
+ * This menu is shown after the documents are concatenated
+ */
 async function viewExpandedCategories() {
   const categoryContent = categories.categories.map((c) => {
     const title = `## ${c.category}`;
@@ -361,203 +770,5 @@ async function viewExpandedCategories() {
   }
 }
 
-function estimateTokens(content: string) {
-  return Math.ceil(content.length / 4);
-}
-
-function estimateTokensForCategory(category: any) {
-  return category.refUrls.reduce((acc: number, u: any) => {
-    const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
-    return acc + estimateTokens(siteData?.markdown ?? "");
-  }, 0);
-}
-
-function estimateTokensForAllDocuments() {
-  return categories.categories.reduce((acc: number, c: any) => {
-    return acc + estimateTokensForCategory(c);
-  }, 0);
-}
-
-/**
- * Moves the current crawl directory to the history directory
- * Uses the identifier to name the new directory
- */
-async function archiveCrawl() {
-  const historyDir = path.join(dataDir, "history");
-  ensureDirectory(historyDir);
-  const currentCrawlDir = path.join(dataDir, "current-crawl");
-
-  // Load identifier to use as directory name
-  const identifier = JSON.parse(
-    await fs.promises.readFile(
-      path.join(currentCrawlDir, "identifier.json"),
-      "utf-8"
-    )
-  );
-
-  // Create timestamped directory name
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const archiveDir = path.join(
-    historyDir,
-    `${identifier.identifier}-${timestamp}`
-  );
-
-  // Move current crawl to archive
-  await fs.promises.rename(currentCrawlDir, archiveDir);
-
-  // Create new empty current-crawl directory
-  ensureDirectory(currentCrawlDir);
-
-  console.log(chalk.green(`Archived crawl to ${archiveDir}`));
-}
-
-async function showProcessingMenu() {
-  const { action } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "action",
-      message: "What would you like to do?",
-      choices: [
-        { name: "View Documents Summary", value: "summary" },
-        { name: "View & Prune Documents", value: "view" },
-        { name: "Clean & Concat Documents", value: "concat" },
-        { name: "Archive This Crawl", value: "archive" },
-        { name: "Exit", value: "exit" },
-      ],
-    },
-  ]);
-
-  switch (action) {
-    case "archive":
-      await archiveCrawl();
-      await showProcessingMenu();
-      break;
-    case "summary":
-      showCategoriesSummary();
-      await showProcessingMenu();
-      break;
-    case "view":
-      await viewExpandedCategories();
-      await showProcessingMenu();
-      break;
-    case "concat":
-      const allContentLength = estimateTokensForAllDocuments();
-
-      const averageContentLength = Math.ceil(
-        allContentLength / categories.categories.length
-      );
-
-      const { concatAction } = await inquirer.prompt([
-        {
-          type: "list",
-          name: "concatAction",
-          message: "How would you like to concatenate the documents?",
-          choices: [
-            {
-              name:
-                "All to one file (estimated tokens: " + allContentLength + ")",
-              value: "single",
-            },
-            {
-              name:
-                "One file per category (avg est. tokens: " +
-                averageContentLength +
-                ")",
-              value: "multiple",
-            },
-            { name: "Back", value: "back" },
-          ],
-        },
-      ]);
-
-      if (concatAction === "back") {
-        await showProcessingMenu();
-        break;
-      }
-
-      const outputDir = path.join(currentCrawlDir, "output");
-      ensureDirectory(outputDir);
-
-      if (concatAction === "single") {
-        const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
-        fs.writeFileSync(outputPath, "");
-
-        for (const category of categories.categories) {
-          await fs.promises.appendFile(
-            outputPath,
-            `# ${category.category}\n\n`
-          );
-          await processCategoryContent(category, outputPath);
-        }
-
-        console.log(
-          chalk.green(`Documents concatenated and saved to ${outputPath}`)
-        );
-      } else {
-        for (const category of categories.categories) {
-          const outputPath = path.join(
-            outputDir,
-            `${identifier.identifier}-${category.category
-              .toLowerCase()
-              .replace(/\s+/g, "-")}.md`
-          );
-          fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
-          await processCategoryContent(category, outputPath);
-        }
-
-        console.log(
-          chalk.green(`Documents concatenated and saved to ${outputDir}`)
-        );
-      }
-
-      await showProcessingMenu();
-      break;
-    case "exit":
-      console.log(chalk.blue("Goodbye!"));
-      process.exit(0);
-      break;
-  }
-}
-
-/**
- * Processes the content of a category and appends it to the output file
- * @param category - The category to process
- * @param outputPath - The path to the output file
- */
-async function processCategoryContent(category: any, outputPath: string) {
-  for (const url of category.refUrls) {
-    const siteData = crawlResult.data.find((d) => d.metadata?.url === url);
-    if (siteData?.metadata?.title && siteData?.metadata?.url) {
-      console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-      const cleanedContent = await cleanupMarkdownDocument(siteData.markdown!);
-      const title = `## ${siteData.metadata.title}`;
-      const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-      await fs.promises.appendFile(
-        outputPath,
-        `${title}\n${url}\n\n${cleanedContent}\n\n`
-      );
-    }
-  }
-}
-
-/**
- * Cleans a markdown document by removing extranous markup, links, etc.
- * @param document - The markdown document to clean
- * @returns The cleaned markdown document
- */
-async function cleanupMarkdownDocument(document: string) {
-  const result = await generateText({
-    model: openai("gpt-4o-mini"),
-    prompt: `Clean the following document. Remove extranous markup, links, etc. Keep only the content that is relevant to the topic such as explanations, code examples, etc: 
-
-    Please return the cleaned content as a markdown document. Do not include any other text or markup.
-   
-    <content>
-    ${document}
-    </content>
-    `,
-  });
-  return result.text;
-}
-
-await showProcessingMenu();
+// Start the application
+await showMainMenu();
