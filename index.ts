@@ -247,8 +247,18 @@ async function run_terminal_cmd(command: string) {
 
 // -- MAIN LOGIC --
 
-async function hasCurrentCrawl() {
-  return fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"));
+async function getCurrentCrawlIdIfAny() {
+  try {
+    const identifier = JSON.parse(
+      await fs.promises.readFile(
+        path.join(currentCrawlDir, "identifier.json"),
+        "utf-8"
+      )
+    );
+    return identifier.identifier;
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -285,8 +295,13 @@ async function archiveCrawl() {
 }
 
 async function startNewCrawl() {
-  if (await hasCurrentCrawl()) {
-    console.log(chalk.yellow("A current crawl already exists."));
+  const currentCrawlId = await getCurrentCrawlIdIfAny();
+  if (currentCrawlId) {
+    console.log(
+      chalk.yellow(
+        `A current crawl already exists. ${currentCrawlId}. Would you like to archive it and start a new crawl?`
+      )
+    );
     // inquirer to archive current crawl or continue from it
     const { action } = await inquirer.prompt([
       {
@@ -296,6 +311,7 @@ async function startNewCrawl() {
         choices: [
           { name: "Archive & Start New Crawl", value: "archive" },
           { name: "Continue from Previous Crawl", value: "continue" },
+          { name: "Cancel", value: "cancel" },
         ],
       },
     ]);
@@ -308,6 +324,10 @@ async function startNewCrawl() {
     if (action === "continue") {
       await continueFromCurrentCrawl();
       return;
+    }
+
+    if (action === "cancel") {
+      await showMainMenu();
     }
   }
 
@@ -495,6 +515,8 @@ async function showMainMenu() {
       )
     );
 
+    const currentCrawlId = await getCurrentCrawlIdIfAny();
+
     const { action } = await inquirer.prompt([
       {
         type: "list",
@@ -502,7 +524,9 @@ async function showMainMenu() {
         message: "What would you like to do?",
         choices: [
           { name: "Start New Crawl", value: "new" },
-          { name: "Continue from Current Crawl", value: "continue" },
+          ...(currentCrawlId
+            ? [{ name: `Continue from ${currentCrawlId}`, value: "continue" }]
+            : []),
           { name: "View Archived Crawls", value: "view" },
           { name: "Delete an Archived Crawl", value: "delete" },
           { name: "Open Data Directory", value: "open" },
@@ -550,7 +574,7 @@ async function showProcessingMenu() {
         { name: "View & Prune Documents", value: "view" },
         { name: "Clean & Concat Documents", value: "concat" },
         { name: "Archive This Crawl", value: "archive" },
-        { name: "Exit", value: "exit" },
+        { name: "Back to Main Menu", value: "back" },
       ],
     },
   ]);
@@ -640,9 +664,8 @@ async function showProcessingMenu() {
 
       await showProcessingMenu();
       break;
-    case "exit":
-      console.log(chalk.blue("Goodbye!"));
-      process.exit(0);
+    case "back":
+      await showMainMenu();
       break;
   }
 }
