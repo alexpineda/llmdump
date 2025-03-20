@@ -1,5 +1,5 @@
 import { crawl } from "./lib/firecrawl";
-import { generateObject } from "ai";
+import { generateObject, generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import type { CrawlStatusResponse } from "@mendable/firecrawl-js";
@@ -169,20 +169,6 @@ for (const category of categories.categories) {
   );
 }
 
-const formatted = categories.categories
-  .map((c) => {
-    const title = `## ${c.category}`;
-    const formattedSiteData = c.refUrls.map((u) => {
-      const siteData = crawlResult.data.find((d) => d.metadata.url === u);
-      const description = `**Description:** ${siteData?.metadata.description}`;
-      const url = `**URL:** ${siteData?.metadata.url}`;
-      return `${url}\n\n${description}\n`;
-    });
-    const markdown = `${title}\n${formattedSiteData.join("\n")}`;
-    return markdown;
-  })
-  .join("\n");
-
 // console.log(cliMarkdown(formatted));
 
 async function pruneCategories() {
@@ -279,6 +265,11 @@ async function viewExpandedCategories() {
   let done = false;
 
   while (!done) {
+    // Show content first
+    console.clear();
+    console.log(cliMarkdown(categoryContent[currentIndex]));
+    console.log(`\nPage ${currentIndex + 1} of ${categoryContent.length}`);
+
     const currentCategory = categories.categories[currentIndex];
     const { action } = await inquirer.prompt([
       {
@@ -371,12 +362,6 @@ async function viewExpandedCategories() {
         done = true;
         break;
     }
-
-    if (!done) {
-      console.clear();
-      console.log(cliMarkdown(categoryContent[currentIndex]));
-      console.log(`\nPage ${currentIndex + 1} of ${categoryContent.length}`);
-    }
   }
 }
 
@@ -430,3 +415,16 @@ async function showMainMenu() {
 }
 
 await showMainMenu();
+
+interface MarkdownDocument {
+  title: string;
+  url: string;
+  content: string;
+}
+
+function concatDocuments(documents: MarkdownDocument[]) {
+  const content = documents
+    .map((d) => [`## ${d.title}`, `[${d.url}](${d.url})`, d.content].join("\n"))
+    .join("\n\n");
+  return content;
+}
