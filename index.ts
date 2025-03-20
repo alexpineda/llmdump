@@ -181,7 +181,9 @@ function categoriesSummary() {
   );
   for (const category of categories.categories) {
     console.log(
-      chalk.green(`Category: ${category.category} (${category.refUrls.length})`)
+      chalk.green(
+        `Category: ${category.category} (${category.refUrls.length}) `
+      )
     );
   }
 }
@@ -307,6 +309,19 @@ async function viewExpandedCategories() {
   }
 }
 
+function estimateTokens(content: string) {
+  return Math.ceil(content.length / 4);
+}
+
+function estimateTokensForAllDocuments() {
+  return categories.categories
+    .flatMap((c) => c.refUrls)
+    .reduce((acc, u) => {
+      const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
+      return acc + estimateTokens(siteData?.markdown ?? "");
+    }, 0);
+}
+
 async function showMainMenu() {
   const { action } = await inquirer.prompt([
     {
@@ -332,39 +347,116 @@ async function showMainMenu() {
       await showMainMenu();
       break;
     case "concat":
-      const outputPath = path.join(
-        currentCrawlDir,
-        `${identifier.identifier}.md`
+      const allContentLength = estimateTokensForAllDocuments();
+
+      const averageContentLength = Math.ceil(
+        allContentLength / categories.categories.length
       );
 
-      fs.writeFileSync(outputPath, "");
+      const { concatAction } = await inquirer.prompt([
+        {
+          type: "list",
+          name: "concatAction",
+          message: "How would you like to concatenate the documents?",
+          choices: [
+            {
+              name:
+                "All to one file (estimated tokens: " + allContentLength + ")",
+              value: "single",
+            },
+            {
+              name:
+                "One file per category (avg est. tokens: " +
+                averageContentLength +
+                ")",
+              value: "multiple",
+            },
+            { name: "Back", value: "back" },
+          ],
+        },
+      ]);
 
-      for (const category of categories.categories) {
-        await fs.promises.appendFile(outputPath, `# ${category.category}\n\n`);
-        for (const url of category.refUrls) {
-          const siteData = crawlResult.data.find(
-            (d) => d.metadata?.url === url
-          );
-          if (siteData?.metadata?.title && siteData?.metadata?.url) {
-            console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-            const cleanedContent = await cleanDocument({
-              title: siteData.metadata.title,
-              url: siteData.metadata.url,
-              content: siteData.markdown!,
-            });
-            const title = `## ${siteData.metadata.title}`;
-            const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-            await fs.promises.appendFile(
-              outputPath,
-              `${title}\n${url}\n\n${cleanedContent}\n\n`
-            );
-          }
-        }
+      if (concatAction === "back") {
+        await showMainMenu();
+        break;
       }
 
-      console.log(
-        chalk.green(`Documents concatenated and saved to ${outputPath}`)
-      );
+      if (concatAction === "single") {
+        const outputDir = path.join(currentCrawlDir, "output");
+        ensureDirectory(outputDir);
+
+        const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
+
+        fs.writeFileSync(outputPath, "");
+
+        for (const category of categories.categories) {
+          await fs.promises.appendFile(
+            outputPath,
+            `# ${category.category}\n\n`
+          );
+          for (const url of category.refUrls) {
+            const siteData = crawlResult.data.find(
+              (d) => d.metadata?.url === url
+            );
+            if (siteData?.metadata?.title && siteData?.metadata?.url) {
+              console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
+              const cleanedContent = await cleanDocument({
+                title: siteData.metadata.title,
+                url: siteData.metadata.url,
+                content: siteData.markdown!,
+              });
+              const title = `## ${siteData.metadata.title}`;
+              const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
+              await fs.promises.appendFile(
+                outputPath,
+                `${title}\n${url}\n\n${cleanedContent}\n\n`
+              );
+            }
+          }
+        }
+
+        console.log(
+          chalk.green(`Documents concatenated and saved to ${outputPath}`)
+        );
+      } else {
+        const outputDir = path.join(currentCrawlDir, "output");
+        ensureDirectory(outputDir);
+
+        for (const category of categories.categories) {
+          const outputPath = path.join(
+            outputDir,
+            `${identifier.identifier}-${category.category
+              .toLowerCase()
+              .replace(/\s+/g, "-")}.md`
+          );
+          fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
+
+          for (const url of category.refUrls) {
+            const siteData = crawlResult.data.find(
+              (d) => d.metadata?.url === url
+            );
+            if (siteData?.metadata?.title && siteData?.metadata?.url) {
+              console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
+              const cleanedContent = await cleanDocument({
+                title: siteData.metadata.title,
+                url: siteData.metadata.url,
+                content: siteData.markdown!,
+              });
+              const title = `## ${siteData.metadata.title}`;
+              const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
+              await fs.promises.appendFile(
+                outputPath,
+                `${title}\n${url}\n\n${cleanedContent}\n\n`
+              );
+            }
+          }
+        }
+
+        console.log(
+          chalk.green(`Documents concatenated and saved to ${outputDir}`)
+        );
+      }
+
       await showMainMenu();
       break;
     case "exit":
@@ -380,13 +472,6 @@ interface MarkdownDocument {
   title: string;
   url: string;
   content: string;
-}
-
-function concatDocuments(documents: MarkdownDocument[]) {
-  const content = documents
-    .map((d) => [`## ${d.title}`, `[${d.url}](${d.url})`, d.content].join("\n"))
-    .join("\n\n");
-  return content;
 }
 
 async function cleanDocument(document: MarkdownDocument) {
