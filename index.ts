@@ -58,12 +58,15 @@ if (!apiKey) {
 }
 
 if (fs.existsSync(path.join(currentCrawlDir, "crawlResult.json"))) {
-  crawlResult = await Bun.file(
-    path.join(currentCrawlDir, "crawlResult.json")
-  ).json();
+  crawlResult = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "crawlResult.json"),
+      "utf-8"
+    )
+  );
 } else {
   crawlResult = await crawl(argv.crawlUrl, { limit: argv.limit }, apiKey);
-  Bun.write(
+  await fs.promises.writeFile(
     path.join(currentCrawlDir, "crawlResult.json"),
     JSON.stringify(crawlResult, null, 2)
   );
@@ -86,9 +89,12 @@ type IdentifierSchema = z.infer<typeof identifierSchema>;
 let identifier: IdentifierSchema;
 
 if (fs.existsSync(path.join(currentCrawlDir, "identifier.json"))) {
-  identifier = await Bun.file(
-    path.join(currentCrawlDir, "identifier.json")
-  ).json();
+  identifier = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "identifier.json"),
+      "utf-8"
+    )
+  );
 } else {
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
@@ -113,7 +119,7 @@ if (fs.existsSync(path.join(currentCrawlDir, "identifier.json"))) {
 
   identifier = result.object;
 
-  Bun.write(
+  await fs.promises.writeFile(
     path.join(currentCrawlDir, "identifier.json"),
     JSON.stringify(identifier, null, 2)
   );
@@ -131,10 +137,36 @@ type CategorySchema = z.infer<typeof categorySchema>;
 
 let categories: CategorySchema;
 
-if (fs.existsSync(path.join(currentCrawlDir, "categories.json"))) {
-  categories = await Bun.file(
-    path.join(currentCrawlDir, "categories.json")
-  ).json();
+async function categorizeSites(
+  sites: { url: string; title: string; description: string }[]
+) {
+  const result = await generateObject({
+    model: openai("gpt-4o-mini"),
+    schema: categorySchema,
+    prompt: `Order the following links by semantic categories: ${sites
+      .map((d) => `${d.url} - ${d.title} - ${d.description}`)
+      .join("\n")}
+        
+        Categories should be relavent to the content of the links.
+        We'll use the categories to concatenate the content of the links together.
+    
+        Your output should be a JSON object with the following fields:
+        - categories: an array of objects with the following fields:
+          - category: the category of the link
+          - refUrls: an array of URLs that are related to the category
+        `,
+  });
+
+  return result.object;
+}
+
+if (fs.existsSync(path.join(currentCrawlDir, "original-categories.json"))) {
+  categories = JSON.parse(
+    await fs.promises.readFile(
+      path.join(currentCrawlDir, "original-categories.json"),
+      "utf-8"
+    )
+  );
 } else {
   // order these by semantic categories
   const result = await generateObject({
@@ -157,8 +189,8 @@ if (fs.existsSync(path.join(currentCrawlDir, "categories.json"))) {
   //   console.log(result.object);
   categories = result.object;
 
-  Bun.write(
-    path.join(currentCrawlDir, "categories.json"),
+  await fs.promises.writeFile(
+    path.join(currentCrawlDir, "original-categories.json"),
     JSON.stringify(result.object, null, 2)
   );
 }
@@ -171,18 +203,22 @@ categories.categories = categories.categories
     ),
   }));
 
-function categoriesSummary() {
+async function categoriesSummary() {
+  const allTokens = estimateTokensForAllDocuments();
   console.log(
     chalk.green(
       `Documents found ${
         categories.categories.flatMap((c) => c.refUrls).length
-      } - Categories found ${categories.categories.length}`
+      } - Categories found ${
+        categories.categories.length
+      } ~ ${allTokens} tokens`
     )
   );
   for (const category of categories.categories) {
+    const tokens = estimateTokensForCategory(category);
     console.log(
       chalk.green(
-        `Category: ${category.category} (${category.refUrls.length}) `
+        `Category: ${category.category} (${category.refUrls.length}) ~ ${tokens} tokens`
       )
     );
   }
@@ -295,7 +331,7 @@ async function viewExpandedCategories() {
         }
 
         // Save pruned categories
-        await Bun.write(
+        await fs.promises.writeFile(
           path.join(currentCrawlDir, "finalized-categories.json"),
           JSON.stringify(categories, null, 2)
         );
@@ -313,16 +349,20 @@ function estimateTokens(content: string) {
   return Math.ceil(content.length / 4);
 }
 
-function estimateTokensForAllDocuments() {
-  return categories.categories
-    .flatMap((c) => c.refUrls)
-    .reduce((acc, u) => {
-      const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
-      return acc + estimateTokens(siteData?.markdown ?? "");
-    }, 0);
+function estimateTokensForCategory(category: any) {
+  return category.refUrls.reduce((acc: number, u: any) => {
+    const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
+    return acc + estimateTokens(siteData?.markdown ?? "");
+  }, 0);
 }
 
-async function showMainMenu() {
+function estimateTokensForAllDocuments() {
+  return categories.categories.reduce((acc: number, c: any) => {
+    return acc + estimateTokensForCategory(c);
+  }, 0);
+}
+
+async function showProcessingMenu() {
   const { action } = await inquirer.prompt([
     {
       type: "list",
@@ -340,11 +380,11 @@ async function showMainMenu() {
   switch (action) {
     case "summary":
       categoriesSummary();
-      await showMainMenu();
+      await showProcessingMenu();
       break;
     case "view":
       await viewExpandedCategories();
-      await showMainMenu();
+      await showProcessingMenu();
       break;
     case "concat":
       const allContentLength = estimateTokensForAllDocuments();
@@ -377,7 +417,7 @@ async function showMainMenu() {
       ]);
 
       if (concatAction === "back") {
-        await showMainMenu();
+        await showProcessingMenu();
         break;
       }
 
@@ -400,11 +440,9 @@ async function showMainMenu() {
             );
             if (siteData?.metadata?.title && siteData?.metadata?.url) {
               console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-              const cleanedContent = await cleanDocument({
-                title: siteData.metadata.title,
-                url: siteData.metadata.url,
-                content: siteData.markdown!,
-              });
+              const cleanedContent = await cleanupMarkdownDocument(
+                siteData.markdown!
+              );
               const title = `## ${siteData.metadata.title}`;
               const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
               await fs.promises.appendFile(
@@ -437,11 +475,9 @@ async function showMainMenu() {
             );
             if (siteData?.metadata?.title && siteData?.metadata?.url) {
               console.log(chalk.bgGrey(`cleaning ${siteData.metadata.url}`));
-              const cleanedContent = await cleanDocument({
-                title: siteData.metadata.title,
-                url: siteData.metadata.url,
-                content: siteData.markdown!,
-              });
+              const cleanedContent = await cleanupMarkdownDocument(
+                siteData.markdown!
+              );
               const title = `## ${siteData.metadata.title}`;
               const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
               await fs.promises.appendFile(
@@ -457,7 +493,7 @@ async function showMainMenu() {
         );
       }
 
-      await showMainMenu();
+      await showProcessingMenu();
       break;
     case "exit":
       console.log(chalk.blue("Goodbye!"));
@@ -466,15 +502,9 @@ async function showMainMenu() {
   }
 }
 
-await showMainMenu();
+await showProcessingMenu();
 
-interface MarkdownDocument {
-  title: string;
-  url: string;
-  content: string;
-}
-
-async function cleanDocument(document: MarkdownDocument) {
+async function cleanupMarkdownDocument(document: string) {
   const result = await generateText({
     model: openai("gpt-4o-mini"),
     prompt: `Clean the following document. Remove extranous markup, links, etc. Keep only the content that is relevant to the topic such as explanations, code examples, etc: 
@@ -482,7 +512,7 @@ async function cleanDocument(document: MarkdownDocument) {
     Please return the cleaned content as a markdown document. Do not include any other text or markup.
    
     <content>
-    ${document.content}
+    ${document}
     </content>
     `,
   });
