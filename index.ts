@@ -105,6 +105,7 @@ function sanitizeCategories(categories: CategorySchema) {
 }
 
 async function categorizeSites(sites: CrawledDocument[]) {
+  console.log(chalk.blue(`Categorizing ${sites.length} documents...`));
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
     schema: categorySchema,
@@ -126,6 +127,9 @@ async function categorizeSites(sites: CrawledDocument[]) {
 }
 
 async function generateIdentifier(documents: CrawledDocument[]) {
+  console.log(
+    chalk.blue(`Generating identifier for ${documents.length} documents...`)
+  );
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
     schema: identifierSchema,
@@ -151,10 +155,10 @@ async function generateIdentifier(documents: CrawledDocument[]) {
   return identifier;
 }
 function estimateTokens(content: string) {
-  return Math.ceil(content.length / 4);
+  return (Math.ceil(content.length / 4) * 4) / 5; // 4/5 is cleaned document estimate
 }
 
-function estimateTokensForCategory(category: any) {
+function estimateTokensForCategory(category: CategorySchema["categories"][0]) {
   return category.refUrls.reduce((acc: number, u: any) => {
     const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
     return acc + estimateTokens(siteData?.markdown ?? "");
@@ -432,9 +436,13 @@ async function viewArchivedCrawls() {
       type: "list",
       name: "selectedArchive",
       message: "Select an archived crawl to view:",
-      choices: archives,
+      choices: [...archives, "cancel"],
     },
   ]);
+
+  if (selectedArchive === "cancel") {
+    return;
+  }
 
   const archivePath = path.join(historyDir, selectedArchive);
   const archiveFiles = await fs.promises.readdir(archivePath);
@@ -457,9 +465,13 @@ async function deleteArchivedCrawl() {
       type: "list",
       name: "selectedArchive",
       message: "Select an archived crawl to delete:",
-      choices: archives,
+      choices: [...archives, "cancel"],
     },
   ]);
+
+  if (selectedArchive === "cancel") {
+    return;
+  }
 
   const { confirm } = await inquirer.prompt([
     {
@@ -523,10 +535,10 @@ async function showMainMenu() {
         name: "action",
         message: "What would you like to do?",
         choices: [
-          { name: "Start New Crawl", value: "new" },
           ...(currentCrawlId
             ? [{ name: `Continue from ${currentCrawlId}`, value: "continue" }]
             : []),
+          { name: "Start New Crawl", value: "new" },
           { name: "View Archived Crawls", value: "view" },
           { name: "Delete an Archived Crawl", value: "delete" },
           { name: "Open Data Directory", value: "open" },
@@ -582,7 +594,7 @@ async function showProcessingMenu() {
   switch (action) {
     case "archive":
       await archiveCrawl();
-      await showProcessingMenu();
+      await showMainMenu();
       break;
     case "summary":
       showCategoriesSummary();
@@ -606,15 +618,11 @@ async function showProcessingMenu() {
           message: "How would you like to concatenate the documents?",
           choices: [
             {
-              name:
-                "All to one file (estimated tokens: " + allContentLength + ")",
+              name: `All to one file ~ ${allContentLength} tokens`,
               value: "single",
             },
             {
-              name:
-                "One file per category (avg est. tokens: " +
-                averageContentLength +
-                ")",
+              name: `One file per category ~ ${averageContentLength} tokens`,
               value: "multiple",
             },
             { name: "Back", value: "back" },
@@ -679,7 +687,8 @@ async function viewExpandedCategories() {
     const title = `## ${c.category}`;
     const formattedSiteData = c.refUrls.map((u) => {
       const siteData = crawlResult.data.find((d) => d.metadata?.url === u);
-      const title = `**${siteData?.metadata?.title}**`;
+      const estTokens = estimateTokens(siteData?.markdown || "");
+      const title = `**${siteData?.metadata?.title}** ~ ${estTokens} tokens`;
       const description = `${
         siteData?.metadata?.description || "No description"
       }`;
@@ -699,17 +708,23 @@ async function viewExpandedCategories() {
     console.log(`\nPage ${currentIndex + 1} of ${categoryContent.length}`);
 
     const currentCategory = categories.categories[currentIndex];
+    const estTokens = estimateTokensForCategory(currentCategory);
+
     const { action } = await inquirer.prompt([
       {
         type: "list",
         name: "action",
-        message: `Navigation - ${currentCategory.category}`,
+        message: `Navigation - ${currentCategory.category} ~ ${estTokens} tokens`,
         choices: [
           { name: "Next Page", value: "next" },
           { name: "Previous Page", value: "prev" },
           {
             name: `Prune Sites from ${currentCategory.category}`,
             value: "prune",
+          },
+          {
+            name: `Split Category ${currentCategory.category}`,
+            value: "split",
           },
           { name: "Back to Menu", value: "back" },
         ],
@@ -723,6 +738,93 @@ async function viewExpandedCategories() {
         break;
       case "prev":
         currentIndex = Math.max(currentIndex - 1, 0);
+        break;
+      case "split":
+        const sitesToSplit = currentCategory.refUrls.map((url) => {
+          const siteData = crawlResult.data.find(
+            (d) => d.metadata?.url === url
+          );
+          return {
+            url: siteData?.metadata?.url || url,
+            title: siteData?.metadata?.title || url,
+            description: siteData?.metadata?.description || "",
+            content: siteData?.markdown || "",
+          };
+        });
+
+        try {
+          const newCategories = await categorizeSites(sitesToSplit);
+
+          // Check for duplicate categories and merge if found
+          for (const newCat of newCategories.categories) {
+            const existingCat = categories.categories.find(
+              (c) => c.category.toLowerCase() === newCat.category.toLowerCase()
+            );
+
+            if (existingCat) {
+              // Merge with existing category
+              existingCat.refUrls = [
+                ...new Set([...existingCat.refUrls, ...newCat.refUrls]),
+              ];
+              console.log(
+                chalk.yellow(
+                  `Merged with existing category: ${newCat.category}`
+                )
+              );
+            } else {
+              // Add as new category
+              categories.categories.push(newCat);
+              console.log(
+                chalk.green(`Created new category: ${newCat.category}`)
+              );
+            }
+          }
+
+          // Remove the original category
+          categories.categories = categories.categories.filter(
+            (c) => c !== currentCategory
+          );
+
+          // Update category content
+          categoryContent.splice(currentIndex, 1);
+          currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+
+          // Save updated categories
+          await fs.promises.writeFile(
+            path.join(currentCrawlDir, "finalized-categories.json"),
+            JSON.stringify(categories, null, 2)
+          );
+
+          // Show the changes
+          console.log(chalk.blue("\nCategory Split Results:"));
+          for (const cat of newCategories.categories) {
+            console.log(chalk.blue(`\n${cat.category}:`));
+            for (const url of cat.refUrls) {
+              const siteData = crawlResult.data.find(
+                (d) => d.metadata?.url === url
+              );
+              console.log(chalk.gray(`- ${siteData?.metadata?.title || url}`));
+            }
+          }
+
+          // Wait for user to review changes
+          await inquirer.prompt([
+            {
+              type: "input",
+              name: "continue",
+              message: "Press enter to continue...",
+            },
+          ]);
+        } catch (error) {
+          console.error(chalk.red("Failed to split category:", error));
+          await inquirer.prompt([
+            {
+              type: "input",
+              name: "continue",
+              message: "Press enter to continue...",
+            },
+          ]);
+        }
         break;
       case "prune":
         const { selectedSites } = await inquirer.prompt([
