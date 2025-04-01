@@ -2,14 +2,15 @@
   "name": "llmdump",
   "version": "1.0.0",
   "description": "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs",
-  "module": "index.ts",
+  "module": "src/cli.ts",
   "type": "module",
   "scripts": {
-    "start": "bun run index.ts",
-    "build": "tsc"
+    "start": "bun run src/cli.ts",
+    "build": "tsc",
+    "check": "tsc --noEmit"
   },
   "bin": {
-    "llmdump": "./dist/index.js"
+    "llmdump": "./dist/src/cli.js"
   },
   "devDependencies": {
     "@types/bun": "latest",
