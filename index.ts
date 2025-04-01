@@ -205,7 +205,9 @@ async function showCategoriesSummary() {
  * @param category - The category to process
  * @param outputPath - The path to the output file
  */
-async function processCategoryContent(category: any, outputPath: string) {
+async function* processCategoryContent(
+  category: CategorySchema["categories"][0]
+) {
   for (const url of category.refUrls) {
     const siteData = crawlResult.data.find((d) => d.metadata?.url === url);
     if (siteData?.metadata?.title && siteData?.metadata?.url) {
@@ -213,12 +215,21 @@ async function processCategoryContent(category: any, outputPath: string) {
       const cleanedContent = await cleanupMarkdownDocument(siteData.markdown!);
       const title = `## ${siteData.metadata.title}`;
       const url = `[${siteData.metadata.url}](${siteData.metadata.url})`;
-      await fs.promises.appendFile(
-        outputPath,
-        `${title}\n${url}\n\n${cleanedContent}\n\n`
-      );
+      yield [title, url, cleanedContent];
     }
   }
+}
+
+/**
+ * Parse # headers and return the title only
+ * @param content
+ */
+async function processCategorySummary(content: string): Promise<string[]> {
+  const lines = content.split("\n");
+  const headers = lines
+    .filter((line) => line.startsWith("#"))
+    .map((line) => line.replace("#", "##").trim());
+  return headers;
 }
 
 /**
@@ -468,6 +479,69 @@ async function viewArchivedCrawls() {
   for (const file of archiveFiles) {
     console.log(chalk.blue(`- ${file}`));
   }
+
+  const { action } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "action",
+      message: "What would you like to do with this archive?",
+      choices: [
+        { name: "Copy to Current Crawl", value: "copy" },
+        { name: "Back", value: "back" },
+      ],
+    },
+  ]);
+
+  if (action === "copy") {
+    const currentCrawlId = await getCurrentCrawlIdIfAny();
+    if (currentCrawlId) {
+      const { confirm } = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "confirm",
+          message: `A current crawl exists (${currentCrawlId}). Do you want to overwrite it?`,
+        },
+      ]);
+
+      if (!confirm) {
+        return;
+      }
+
+      // Delete current crawl
+      await deleteCurrentCrawl();
+    }
+
+    // Copy archive to current crawl
+    await fs.promises.cp(archivePath, currentCrawlDir, { recursive: true });
+    console.log(
+      chalk.green(`Successfully copied ${selectedArchive} to current crawl`)
+    );
+
+    // Load the copied data
+    crawlResult = JSON.parse(
+      await fs.promises.readFile(
+        path.join(currentCrawlDir, "crawlResult.json"),
+        "utf-8"
+      )
+    );
+
+    identifier = JSON.parse(
+      await fs.promises.readFile(
+        path.join(currentCrawlDir, "identifier.json"),
+        "utf-8"
+      )
+    );
+
+    categories = JSON.parse(
+      await fs.promises.readFile(
+        path.join(currentCrawlDir, "original-categories.json"),
+        "utf-8"
+      )
+    );
+
+    categories.categories = sanitizeCategories(categories);
+    await showProcessingMenu();
+  }
 }
 
 async function deleteArchivedCrawl() {
@@ -524,6 +598,78 @@ async function openDataDirectory() {
   await run_terminal_cmd(`${command} ${dataDir}`);
 }
 
+async function writeDocumentsToFile(
+  categories: CategorySchema,
+  concatAction: "single" | "multiple"
+) {
+  const outputDir = path.join(currentCrawlDir, "output");
+  ensureDirectory(outputDir);
+
+  if (concatAction === "single") {
+    const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
+    fs.writeFileSync(outputPath, "");
+
+    for (const category of categories.categories) {
+      await fs.promises.appendFile(outputPath, `# ${category.category}\n\n`);
+      for await (const [title, url, cleanedContent] of processCategoryContent(
+        category
+      )) {
+        await fs.promises.appendFile(
+          outputPath,
+          `${title}\n${url}\n\n${cleanedContent}\n\n`
+        );
+      }
+    }
+
+    console.log(
+      chalk.green(`Documents concatenated and saved to ${outputPath}`)
+    );
+  } else {
+    const tocFile = path.join(outputDir, `toc.md`);
+    fs.writeFileSync(tocFile, "");
+
+    for (const category of categories.categories) {
+      // Sanitize category name to ensure it doesn't contain path separators
+      const sanitizedCategory = category.category
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[\/\\]/g, "-"); // Replace slashes with hyphens
+
+      const outputPath = path.join(
+        outputDir,
+        `${identifier.identifier}-${sanitizedCategory}.md`
+      );
+
+      // Create any parent directories that might be in the path
+      const dirPath = path.dirname(outputPath);
+      ensureDirectory(dirPath);
+
+      fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
+      fs.appendFileSync(
+        tocFile,
+        `# [${category.category}](${path.basename(outputPath)})\n`
+      );
+
+      for await (const [title, url, cleanedContent] of processCategoryContent(
+        category
+      )) {
+        await fs.promises.appendFile(
+          outputPath,
+          `${title}\n${url}\n\n${cleanedContent}\n\n`
+        );
+        const summary = await processCategorySummary(cleanedContent);
+        await fs.promises.appendFile(
+          tocFile,
+          `${summary.map((s) => `- ${s})`).join("\n")}\n\n`
+        );
+      }
+    }
+
+    console.log(
+      chalk.green(`Documents concatenated and saved to ${outputDir}`)
+    );
+  }
+}
 // -- MENUS --
 
 /**
@@ -660,39 +806,9 @@ async function showProcessingMenu() {
       const outputDir = path.join(currentCrawlDir, "output");
       ensureDirectory(outputDir);
 
-      if (concatAction === "single") {
-        const outputPath = path.join(outputDir, `${identifier.identifier}.md`);
-        fs.writeFileSync(outputPath, "");
-
-        for (const category of categories.categories) {
-          await fs.promises.appendFile(
-            outputPath,
-            `# ${category.category}\n\n`
-          );
-          await processCategoryContent(category, outputPath);
-        }
-
-        console.log(
-          chalk.green(`Documents concatenated and saved to ${outputPath}`)
-        );
-      } else {
-        for (const category of categories.categories) {
-          const outputPath = path.join(
-            outputDir,
-            `${identifier.identifier}-${category.category
-              .toLowerCase()
-              .replace(/\s+/g, "-")}.md`
-          );
-          fs.writeFileSync(outputPath, `# ${category.category}\n\n`);
-          await processCategoryContent(category, outputPath);
-        }
-
-        console.log(
-          chalk.green(`Documents concatenated and saved to ${outputDir}`)
-        );
-      }
-
+      await writeDocumentsToFile(categories, concatAction);
       await showProcessingMenu();
+
       break;
     case "back":
       await showMainMenu();
