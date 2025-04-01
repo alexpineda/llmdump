@@ -221,10 +221,10 @@ async function showMainMenu(clear = true) {
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { name: "Start New Crawl", value: "new" },
-        { name: "Open Existing Crawl", value: "open" },
-        { name: "Delete Crawl", value: "delete" },
-        { name: "Manage Configuration", value: "config" },
+        { name: "Start new crawl", value: "new" },
+        { name: "Open existing crawl", value: "open" },
+        { name: "Delete crawl", value: "delete" },
+        { name: "Manage configuration", value: "config" },
         { name: "Exit", value: "exit" },
       ],
     },
@@ -446,8 +446,15 @@ async function showProcessingMenu() {
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { name: "View/Prune Documents & Categories", value: "view" },
-        { name: "Export Documents", value: "concat" },
+        {
+          name: "View/prune documents (In case we crawled some junk)",
+          value: "view",
+        },
+        { name: "Export & clean documents", value: "clean_export" },
+        {
+          name: "Export raw documents (No AI cleanup, faster)",
+          value: "export",
+        },
         { name: "Back to Main Menu", value: "back" },
       ],
     },
@@ -458,7 +465,9 @@ async function showProcessingMenu() {
       await viewExpandedCategories();
       await showProcessingMenu();
       break;
-    case "concat":
+    case "clean_export":
+    case "export":
+      const shouldClean = action === "clean_export";
       const allContentLength = lib.processing.estimateTokensForAllDocuments(
         categories,
         crawlResult
@@ -491,7 +500,10 @@ async function showProcessingMenu() {
         break;
       }
 
-      await writeDocumentsToFile(concatAction as "single" | "multiple");
+      await writeDocumentsToFile(
+        concatAction as "single" | "multiple",
+        shouldClean
+      );
       await showProcessingMenu();
       break;
     case "back":
@@ -548,14 +560,14 @@ async function viewExpandedCategories() {
             ? [{ name: "Previous Page", value: "prev" }]
             : []),
           {
-            name: `Prune Sites from ${currentCategory.category}`,
+            name: `Prune documents (Guided removal wizard)`,
             value: "prune",
           },
           {
-            name: `Split Category ${currentCategory.category}`,
+            name: `Split category into multiple categories (AI)`,
             value: "split",
           },
-          { name: "Back to Menu", value: "back" },
+          { name: "Back to menu", value: "back" },
         ],
         pageSize: 10,
       },
@@ -569,6 +581,20 @@ async function viewExpandedCategories() {
         currentIndex = Math.max(currentIndex - 1, 0);
         break;
       case "split":
+        // Add confirmation prompt
+        const { confirmSplit } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "confirmSplit",
+            message: `Are you sure you want to split "${currentCategory.category}" into multiple categories using AI? This will recategorize ${currentCategory.refUrls.length} sites.`,
+          },
+        ]);
+
+        if (!confirmSplit) {
+          console.log(chalk.yellow("Category split cancelled."));
+          break;
+        }
+
         // Gather sites in current category for AI recategorization
         const sitesToSplit = currentCategory.refUrls.map((url) => {
           const siteData = crawlResult.data.find(
@@ -781,7 +807,10 @@ async function viewExpandedCategories() {
 /**
  * Writes documents to file
  */
-async function writeDocumentsToFile(concatAction: "single" | "multiple") {
+async function writeDocumentsToFile(
+  concatAction: "single" | "multiple",
+  shouldClean: boolean
+) {
   const currentPath = await lib.storage.getCurrentCrawlPath();
   const outputDir = path.join(currentPath, "output");
   await lib.storage.ensureDirectory(outputDir);
@@ -793,7 +822,8 @@ async function writeDocumentsToFile(concatAction: "single" | "multiple") {
       crawlResult,
       outputDir,
       openai,
-      concatAction
+      concatAction,
+      shouldClean
     );
 
     console.log(chalk.green(`Documents written to:`));
@@ -905,10 +935,10 @@ async function manageConfiguration(clear = true) {
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { name: "Update Firecrawl API Key", value: "firecrawl" },
-        { name: "Update OpenAI API Key", value: "openai" },
-        { name: "Open Config Directory", value: "open" },
-        { name: "Back to Main Menu", value: "back" },
+        { name: "Update Firecrawl API key", value: "firecrawl" },
+        { name: "Update OpenAI API key", value: "openai" },
+        { name: "Open config directory", value: "open" },
+        { name: "Back to main menu", value: "back" },
       ],
     },
   ]);

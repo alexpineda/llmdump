@@ -82,12 +82,14 @@ export interface DocumentContent {
  * @param url The URL of the document to process
  * @param crawlResult The crawl result containing the document
  * @param openai The OpenAI instance for cleaning
+ * @param clean Whether to clean the content
  * @returns The processed document content
  */
 export async function processDocument(
   url: string,
   crawlResult: CrawlStatusResponse,
-  openai: OpenAIInstance
+  openai: OpenAIInstance,
+  clean: boolean
 ): Promise<DocumentContent | null> {
   const siteData = crawlResult.data.find((d) => d.metadata?.url === url);
   if (
@@ -98,14 +100,14 @@ export async function processDocument(
     return null;
   }
 
-  const cleanedContent = await cleanupMarkdownDocument(
-    siteData.markdown,
-    openai
-  );
+  const content = clean
+    ? await cleanupMarkdownDocument(siteData.markdown, openai)
+    : siteData.markdown;
+
   return {
     title: siteData.metadata.title,
     url: siteData.metadata.url,
-    content: cleanedContent,
+    content: content,
   };
 }
 
@@ -114,17 +116,19 @@ export async function processDocument(
  * @param category The category to process
  * @param crawlResult The crawl result containing the documents
  * @param openai The OpenAI instance for cleaning
+ * @param clean Whether to clean the content
  * @returns Array of processed documents
  */
 export async function processCategoryContent(
   category: CategorySchema["categories"][0],
   crawlResult: CrawlStatusResponse,
-  openai: OpenAIInstance
+  openai: OpenAIInstance,
+  clean: boolean
 ): Promise<DocumentContent[]> {
   const documents: DocumentContent[] = [];
 
   for (const url of category.refUrls) {
-    const document = await processDocument(url, crawlResult, openai);
+    const document = await processDocument(url, crawlResult, openai, clean);
     if (document) {
       documents.push(document);
     }
@@ -181,6 +185,8 @@ export function pruneUrlsFromCategory(
  * @param outputDir The directory to write the documents to
  * @param openai The OpenAI instance for cleaning
  * @param mode Whether to write a single file or multiple files
+ * @param clean Whether to clean the content
+ * @returns Array of written file paths
  */
 export async function writeDocumentsToFile(
   categories: CategorySchema,
@@ -188,7 +194,8 @@ export async function writeDocumentsToFile(
   crawlResult: CrawlStatusResponse,
   outputDir: string,
   openai: OpenAIInstance,
-  mode: "single" | "multiple" = "single"
+  mode: "single" | "multiple" = "single",
+  clean: boolean
 ): Promise<string[]> {
   const outputFiles: string[] = [];
 
@@ -203,7 +210,8 @@ export async function writeDocumentsToFile(
       const documents = await processCategoryContent(
         category,
         crawlResult,
-        openai
+        openai,
+        clean
       );
 
       for (const doc of documents) {
@@ -229,7 +237,8 @@ export async function writeDocumentsToFile(
       const documents = await processCategoryContent(
         category,
         crawlResult,
-        openai
+        openai,
+        clean
       );
 
       for (const doc of documents) {
