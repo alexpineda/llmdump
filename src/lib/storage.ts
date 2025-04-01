@@ -261,15 +261,19 @@ export async function createNewCrawl(
 /**
  * Saves crawl result to history and sets it as current
  * @param crawlResult The crawl result to save
+ * @param identifier Optional identifier for the directory name
  * @returns The path to the new crawl directory
  */
 export async function saveCrawlToHistory(
-  crawlResult: CrawlStatusResponse
+  crawlResult: CrawlStatusResponse,
+  identifier?: IdentifierSchema
 ): Promise<string> {
-  // Create a temporary identifier for the directory name
+  // Create directory name using identifier if provided, otherwise use timestamp
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const tempId = `crawl-${timestamp}`;
-  const newCrawlDir = path.join(DEFAULT_PATHS.historyDir, tempId);
+  const dirName = identifier
+    ? `${identifier.identifier}-${timestamp}`
+    : `crawl-${timestamp}`;
+  const newCrawlDir = path.join(DEFAULT_PATHS.historyDir, dirName);
 
   await ensureDirectory(newCrawlDir);
   await saveCrawlResult(crawlResult, newCrawlDir);

@@ -61,22 +61,27 @@ export async function generateIdentifier(
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
     schema: identifierSchema,
-    prompt: `Provide a unique identifier for the following links: ${documents
+    prompt: `Create a descriptive identifier for this collection of documents. The identifier should:
+    - Be a short, memorable string that describes the content
+    - Use lowercase letters, numbers, and hyphens only
+    - Include the main topic/technology/product name
+    - Be between 3-5 words maximum
+    - Not include timestamps or version numbers
+    
+    Documents to analyze:
+    ${documents
       .map((d) => `${d.url} - ${d.title} - ${d.description}`)
       .join("\n")}
-          
-      The identifier should be a unique identifier for the links.
-      It should be a short string that is easy to remember.
-
-
-      Example:
-      {
-        "identifier": "tanstack-router-react-docs"
-      }
-  
-      Your output should be a JSON object with the following fields:
-      - identifier: a unique identifier for the links
-      `,
+    
+    Example good identifiers:
+    - "react-router-docs"
+    - "kubernetes-networking-guide" 
+    - "typescript-handbook"
+    - "aws-lambda-tutorial"
+    
+    Your output should be a JSON object with the following fields:
+    - identifier: the descriptive identifier string
+    `,
   });
 
   return result.object;

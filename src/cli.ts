@@ -296,11 +296,17 @@ async function startNewCrawl() {
     // Perform the crawl
     crawlResult = await lib.crawl.crawlWebsite(url, { limit }, firecrawlKey);
 
-    // Save crawl result to history
-    const crawlPath = await lib.storage.saveCrawlToHistory(crawlResult);
-
     // Extract documents from the crawl result
     const documents = lib.crawl.extractDocuments(crawlResult);
+
+    // Generate identifier first
+    identifier = await lib.ai.generateIdentifier(documents, openai);
+
+    // Save crawl result to history with identifier
+    const crawlPath = await lib.storage.saveCrawlToHistory(
+      crawlResult,
+      identifier
+    );
 
     // Generate categories
     categories = await lib.ai.categorizeSites(documents, openai);
@@ -312,8 +318,7 @@ async function startNewCrawl() {
       JSON.stringify(categories, null, 2)
     );
 
-    // Generate identifier
-    identifier = await lib.ai.generateIdentifier(documents, openai);
+    // Save identifier
     await lib.storage.saveIdentifier(identifier, crawlPath);
 
     // Set this as the current crawl
