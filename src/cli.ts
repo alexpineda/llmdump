@@ -146,9 +146,6 @@ let identifier: lib.IdentifierSchema;
 
     // Ensure data directories
     await lib.storage.ensureDirectory(lib.storage.DEFAULT_PATHS.dataDir);
-    await lib.storage.ensureDirectory(
-      lib.storage.DEFAULT_PATHS.currentCrawlDir
-    );
     await lib.storage.ensureDirectory(lib.storage.DEFAULT_PATHS.historyDir);
 
     // Check for updates
@@ -193,45 +190,73 @@ async function runTerminalCommand(command: string): Promise<string> {
 }
 
 /**
+ * Shows the main menu
+ */
+async function showMainMenu(clear = true) {
+  if (clear) {
+    console.clear();
+
+    console.log(
+      boxen(
+        chalk.blue("LLMDump") +
+          "\n" +
+          chalk.gray(
+            "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
+          ) +
+          "\n" +
+          chalk.gray(`v${currentVersion}`),
+        { padding: 1 }
+      )
+    );
+    console.log(
+      chalk.yellow(
+        "Warning: This is alpha software. It is not ready for production use."
+      )
+    );
+  }
+
+  const { action } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "action",
+      message: "What would you like to do?",
+      choices: [
+        { name: "Start New Crawl", value: "new" },
+        { name: "Open Existing Crawl", value: "open" },
+        { name: "Delete Crawl", value: "delete" },
+        { name: "Open Data Directory", value: "directory" },
+        { name: "Manage Configuration", value: "config" },
+        { name: "Exit", value: "exit" },
+      ],
+    },
+  ]);
+
+  switch (action) {
+    case "new":
+      await startNewCrawl();
+      break;
+    case "open":
+      await openExistingCrawl();
+      break;
+    case "delete":
+      await deleteCrawl();
+      break;
+    case "directory":
+      await openDataDirectory();
+      break;
+    case "config":
+      await manageConfiguration();
+      break;
+    case "exit":
+      console.log(chalk.blue("Goodbye!"));
+      process.exit(0);
+  }
+}
+
+/**
  * Starts a new crawl
  */
 async function startNewCrawl() {
-  const currentCrawlId = await getCurrentCrawlIdIfAny();
-  if (currentCrawlId) {
-    console.log(
-      chalk.yellow(
-        `A current crawl already exists: ${currentCrawlId}. What would you like to do?`
-      )
-    );
-
-    // inquirer to archive current crawl or continue from it
-    const { action } = await inquirer.prompt([
-      {
-        type: "list",
-        name: "action",
-        message: "What would you like to do?",
-        choices: [
-          { name: "Continue from Previous Crawl", value: "continue" },
-          { name: "Archive & Start New Crawl", value: "archive" },
-          { name: "Delete & Start New Crawl", value: "delete" },
-          { name: "Cancel", value: "cancel" },
-        ],
-      },
-    ]);
-
-    if (action === "archive") {
-      await archiveCrawl();
-    } else if (action === "delete") {
-      await deleteCurrentCrawl();
-    } else if (action === "continue") {
-      await continueFromCurrentCrawl();
-      return;
-    } else {
-      await showMainMenu();
-      return;
-    }
-  }
-
   // Get URL and limit from user
   const { url, limit } = await inquirer.prompt([
     {
@@ -261,28 +286,28 @@ async function startNewCrawl() {
     // Perform the crawl
     crawlResult = await lib.crawl.crawlWebsite(url, { limit }, firecrawlKey);
 
-    // Save crawl result
-    await lib.storage.saveCrawlResult(crawlResult);
+    // Save crawl result to history
+    const crawlPath = await lib.storage.saveCrawlToHistory(crawlResult);
 
     // Extract documents from the crawl result
     const documents = lib.crawl.extractDocuments(crawlResult);
 
     // Generate categories
     categories = await lib.ai.categorizeSites(documents, openai);
-    await lib.storage.saveCategories(categories);
+    await lib.storage.saveCategories(categories, crawlPath);
 
     // Save original categories for reference
     await fs.writeFile(
-      path.join(
-        lib.storage.DEFAULT_PATHS.currentCrawlDir,
-        "original-categories.json"
-      ),
+      path.join(crawlPath, "original-categories.json"),
       JSON.stringify(categories, null, 2)
     );
 
     // Generate identifier
     identifier = await lib.ai.generateIdentifier(documents, openai);
-    await lib.storage.saveIdentifier(identifier);
+    await lib.storage.saveIdentifier(identifier, crawlPath);
+
+    // Set this as the current crawl
+    await lib.storage.setCurrentCrawlPointer(crawlPath);
 
     // Sanitize categories
     categories = lib.processing.sanitizeCategories(categories, crawlResult);
@@ -296,205 +321,104 @@ async function startNewCrawl() {
 }
 
 /**
- * Gets the current crawl identifier if any
+ * Opens an existing crawl
  */
-async function getCurrentCrawlIdIfAny() {
-  const identifier = await lib.storage.loadIdentifier();
-  return identifier?.identifier || null;
-}
-
-/**
- * Archives the current crawl
- */
-async function archiveCrawl() {
-  const identifier = await lib.storage.loadIdentifier();
-  if (!identifier) {
-    console.log(chalk.yellow("No current crawl to archive"));
+async function openExistingCrawl() {
+  const crawls = await lib.storage.listCrawls();
+  if (crawls.length === 0) {
+    console.log(chalk.yellow("No existing crawls found."));
+    await showMainMenu(false);
     return;
   }
 
-  const archiveDir = await lib.storage.archiveCrawl(identifier);
-  console.log(chalk.green(`Archived crawl to ${archiveDir}`));
-}
+  const { selectedCrawl } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "selectedCrawl",
+      message: "Select a crawl to open:",
+      choices: [...crawls, "cancel"],
+    },
+  ]);
 
-/**
- * Deletes the current crawl
- */
-async function deleteCurrentCrawl() {
-  await lib.storage.deleteCurrentCrawl();
-  console.log(chalk.green(`Deleted current crawl`));
-}
+  if (selectedCrawl === "cancel") {
+    await showMainMenu();
+    return;
+  }
 
-/**
- * Continues from the current crawl
- */
-async function continueFromCurrentCrawl() {
   try {
-    // Load data from storage
-    crawlResult =
-      (await lib.storage.loadCrawlResult()) as lib.CrawlStatusResponse;
+    const crawlPath = path.join(
+      lib.storage.DEFAULT_PATHS.historyDir,
+      selectedCrawl
+    );
 
-    // Try to load original categories first, then fallback to regular categories
-    try {
-      const originalCategoriesPath = path.join(
-        lib.storage.DEFAULT_PATHS.currentCrawlDir,
-        "original-categories.json"
-      );
-      const content = await fs.readFile(originalCategoriesPath, "utf-8");
-      categories = JSON.parse(content);
-    } catch {
-      categories = (await lib.storage.loadCategories()) as lib.CategorySchema;
-    }
+    // Set this as the current crawl
+    await lib.storage.setCurrentCrawlPointer(crawlPath);
 
-    identifier = (await lib.storage.loadIdentifier()) as lib.IdentifierSchema;
+    // Load the crawl data
+    const loadedCrawlResult = await lib.storage.loadCrawlResult(crawlPath);
+    const loadedCategories = await lib.storage.loadCategories(crawlPath);
+    const loadedIdentifier = await lib.storage.loadIdentifier(crawlPath);
 
-    if (!crawlResult || !categories || !identifier) {
-      console.log(
-        chalk.yellow("Missing data from current crawl. Starting a new crawl...")
-      );
-      await startNewCrawl();
+    if (!loadedCrawlResult || !loadedCategories || !loadedIdentifier) {
+      console.log(chalk.yellow("Missing data from selected crawl."));
+      await showMainMenu();
       return;
     }
+
+    // Update state variables
+    crawlResult = loadedCrawlResult;
+    categories = loadedCategories;
+    identifier = loadedIdentifier;
 
     // Sanitize categories
     categories = lib.processing.sanitizeCategories(categories, crawlResult);
 
     await showProcessingMenu();
   } catch (error) {
-    console.error(chalk.red("Error loading current crawl:"), error);
+    console.error(chalk.red("Error loading crawl:"), error);
     await showMainMenu();
   }
 }
 
 /**
- * Shows a summary of the categories
+ * Deletes a crawl
  */
-async function showCategoriesSummary() {
-  const allTokens = lib.processing.estimateTokensForAllDocuments(
-    categories,
-    crawlResult
-  );
-
-  console.log(
-    chalk.green(
-      `Documents: ${
-        categories.categories.flatMap((c) => c.refUrls).length
-      } - Categories: ${categories.categories.length} ~ ${allTokens} tokens`
-    )
-  );
-
-  for (const category of categories.categories) {
-    const tokens = lib.processing.estimateTokensForCategory(
-      category,
-      crawlResult
-    );
-    console.log(
-      chalk.green(
-        `${category.category} (${category.refUrls.length} documents) ~ ${tokens} tokens`
-      )
-    );
-  }
-}
-
-/**
- * Writes documents to file
- */
-async function writeDocumentsToFile(concatAction: "single" | "multiple") {
-  const outputDir = path.join(
-    lib.storage.DEFAULT_PATHS.currentCrawlDir,
-    "output"
-  );
-  await lib.storage.ensureDirectory(outputDir);
-
-  try {
-    const outputFiles = await lib.processing.writeDocumentsToFile(
-      categories,
-      identifier,
-      crawlResult,
-      outputDir,
-      openai,
-      concatAction
-    );
-
-    console.log(chalk.green(`Documents written to:`));
-    for (const file of outputFiles) {
-      console.log(chalk.blue(`- ${file}`));
-    }
-  } catch (error) {
-    console.error(chalk.red("Error writing documents to file:"), error);
-  }
-}
-
-/**
- * Shows the main menu
- */
-async function showMainMenu(clear = true) {
-  if (clear) {
-    console.clear();
-
-    console.log(
-      boxen(
-        chalk.blue("LLMDump") +
-          "\n" +
-          chalk.gray(
-            "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
-          ) +
-          "\n" +
-          chalk.gray(`v${currentVersion}`),
-        { padding: 1 }
-      )
-    );
-    console.log(
-      chalk.yellow(
-        "Warning: This is alpha software. It is not ready for production use."
-      )
-    );
+async function deleteCrawl() {
+  const crawls = await lib.storage.listCrawls();
+  if (crawls.length === 0) {
+    console.log(chalk.yellow("No existing crawls found."));
+    await showMainMenu();
+    return;
   }
 
-  const currentCrawlId = await getCurrentCrawlIdIfAny();
-
-  const { action } = await inquirer.prompt([
+  const { selectedCrawl } = await inquirer.prompt([
     {
       type: "list",
-      name: "action",
-      message: "What would you like to do?",
-      choices: [
-        ...(currentCrawlId
-          ? [{ name: `Continue from ${currentCrawlId}`, value: "continue" }]
-          : []),
-        { name: "Crawl web documents", value: "new" },
-        { name: "Open existing crawls", value: "archives" },
-        { name: "Delete archived crawls", value: "delete" },
-        { name: "Open data directory", value: "open" },
-        { name: "Manage configuration", value: "config" },
-        { name: "Exit", value: "exit" },
-      ],
+      name: "selectedCrawl",
+      message: "Select a crawl to delete:",
+      choices: [...crawls, "cancel"],
     },
   ]);
 
-  switch (action) {
-    case "new":
-      await startNewCrawl();
-      break;
-    case "continue":
-      await continueFromCurrentCrawl();
-      break;
-    case "archives":
-      await viewArchivedCrawls();
-      break;
-    case "delete":
-      await deleteArchivedCrawl();
-      break;
-    case "open":
-      await openDataDirectory();
-      break;
-    case "config":
-      await manageConfiguration();
-      break;
-    case "exit":
-      console.log(chalk.blue("Goodbye!"));
-      process.exit(0);
+  if (selectedCrawl === "cancel") {
+    await showMainMenu();
+    return;
   }
+
+  const { confirm } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "confirm",
+      message: `Are you sure you want to delete ${selectedCrawl}?`,
+    },
+  ]);
+
+  if (confirm) {
+    await lib.storage.deleteCrawl(selectedCrawl);
+    console.log(chalk.green(`Successfully deleted ${selectedCrawl}`));
+  }
+
+  await showMainMenu();
 }
 
 /**
@@ -511,18 +435,12 @@ async function showProcessingMenu() {
       choices: [
         { name: "View/Prune Documents & Categories", value: "view" },
         { name: "Export Documents", value: "concat" },
-        { name: "Archive This Crawl", value: "archive" },
         { name: "Back to Main Menu", value: "back" },
       ],
     },
   ]);
 
   switch (action) {
-    case "archive":
-      await archiveCrawl();
-      await showMainMenu();
-      break;
-
     case "view":
       await viewExpandedCategories();
       await showProcessingMenu();
@@ -728,7 +646,7 @@ async function viewExpandedCategories() {
           await lib.storage.saveCategories(categories);
           await fs.writeFile(
             path.join(
-              lib.storage.DEFAULT_PATHS.currentCrawlDir,
+              await lib.storage.getCurrentCrawlPath(),
               "finalized-categories.json"
             ),
             JSON.stringify(categories, null, 2)
@@ -837,7 +755,7 @@ async function viewExpandedCategories() {
         await lib.storage.saveCategories(categories);
         await fs.writeFile(
           path.join(
-            lib.storage.DEFAULT_PATHS.currentCrawlDir,
+            await lib.storage.getCurrentCrawlPath(),
             "finalized-categories.json"
           ),
           JSON.stringify(categories, null, 2)
@@ -854,133 +772,60 @@ async function viewExpandedCategories() {
 }
 
 /**
- * Views archived crawls
+ * Writes documents to file
  */
-async function viewArchivedCrawls() {
-  const archives = await lib.storage.listArchivedCrawls();
-  if (archives.length === 0) {
-    console.log(chalk.yellow("No existing crawls found."));
-    await showMainMenu(false);
-    return;
-  }
-
-  const { selectedArchive } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "selectedArchive",
-      message: "Select an existing crawl to view:",
-      choices: [...archives, "cancel"],
-    },
-  ]);
-
-  if (selectedArchive === "cancel") {
-    await showMainMenu();
-    return;
-  }
-
-  const archivePath = path.join(
-    lib.storage.DEFAULT_PATHS.historyDir,
-    selectedArchive
-  );
+async function writeDocumentsToFile(concatAction: "single" | "multiple") {
+  const currentPath = await lib.storage.getCurrentCrawlPath();
+  const outputDir = path.join(currentPath, "output");
+  await lib.storage.ensureDirectory(outputDir);
 
   try {
-    const archiveFiles = await fs.readdir(archivePath);
+    const outputFiles = await lib.processing.writeDocumentsToFile(
+      categories,
+      identifier,
+      crawlResult,
+      outputDir,
+      openai,
+      concatAction
+    );
 
-    console.log(chalk.green(`\nContents of ${selectedArchive}:`));
-    for (const file of archiveFiles) {
+    console.log(chalk.green(`Documents written to:`));
+    for (const file of outputFiles) {
       console.log(chalk.blue(`- ${file}`));
     }
-
-    const { action } = await inquirer.prompt([
-      {
-        type: "list",
-        name: "action",
-        message: "What would you like to do with this archive?",
-        choices: [
-          { name: "Copy to Current Crawl", value: "copy" },
-          { name: "Back", value: "back" },
-        ],
-      },
-    ]);
-
-    if (action === "copy") {
-      const currentCrawlId = await getCurrentCrawlIdIfAny();
-      if (currentCrawlId) {
-        const { confirm } = await inquirer.prompt([
-          {
-            type: "confirm",
-            name: "confirm",
-            message: `A current crawl exists (${currentCrawlId}). Do you want to overwrite it?`,
-          },
-        ]);
-
-        if (!confirm) {
-          await showMainMenu();
-          return;
-        }
-
-        // Delete current crawl
-        await lib.storage.deleteCurrentCrawl();
-      }
-
-      // Copy archive to current crawl
-      await fs.cp(archivePath, lib.storage.DEFAULT_PATHS.currentCrawlDir, {
-        recursive: true,
-      });
-      console.log(
-        chalk.green(`Successfully copied ${selectedArchive} to current crawl`)
-      );
-
-      // Load the copied data
-      await continueFromCurrentCrawl();
-    } else {
-      await showMainMenu();
-    }
   } catch (error) {
-    console.error(chalk.red("Error accessing archive:"), error);
-    await showMainMenu();
+    console.error(chalk.red("Error writing documents to file:"), error);
   }
 }
 
 /**
- * Deletes an archived crawl
+ * Shows a summary of the categories
  */
-async function deleteArchivedCrawl() {
-  const archives = await lib.storage.listArchivedCrawls();
-  if (archives.length === 0) {
-    console.log(chalk.yellow("No existing crawls found."));
-    await showMainMenu();
-    return;
+async function showCategoriesSummary() {
+  const allTokens = lib.processing.estimateTokensForAllDocuments(
+    categories,
+    crawlResult
+  );
+
+  console.log(
+    chalk.green(
+      `Documents: ${
+        categories.categories.flatMap((c) => c.refUrls).length
+      } - Categories: ${categories.categories.length} ~ ${allTokens} tokens`
+    )
+  );
+
+  for (const category of categories.categories) {
+    const tokens = lib.processing.estimateTokensForCategory(
+      category,
+      crawlResult
+    );
+    console.log(
+      chalk.green(
+        `${category.category} (${category.refUrls.length} documents) ~ ${tokens} tokens`
+      )
+    );
   }
-
-  const { selectedArchive } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "selectedArchive",
-      message: "Select an archived crawl to delete:",
-      choices: [...archives, "cancel"],
-    },
-  ]);
-
-  if (selectedArchive === "cancel") {
-    await showMainMenu();
-    return;
-  }
-
-  const { confirm } = await inquirer.prompt([
-    {
-      type: "confirm",
-      name: "confirm",
-      message: `Are you sure you want to delete ${selectedArchive}?`,
-    },
-  ]);
-
-  if (confirm) {
-    await lib.storage.deleteArchivedCrawl(selectedArchive);
-    console.log(chalk.green(`Successfully deleted ${selectedArchive}`));
-  }
-
-  await showMainMenu();
 }
 
 /**

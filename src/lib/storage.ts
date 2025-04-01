@@ -13,8 +13,12 @@ import type {
 export const DEFAULT_PATHS = {
   configDir: path.join(os.homedir(), ".llmdump"),
   dataDir: path.join(os.homedir(), ".llmdump", "data"),
-  currentCrawlDir: path.join(os.homedir(), ".llmdump", "data", "current-crawl"),
   historyDir: path.join(os.homedir(), ".llmdump", "data", "history"),
+  currentCrawlPointer: path.join(
+    os.homedir(),
+    ".llmdump",
+    "currentCrawlPointer.json"
+  ),
 };
 
 /**
@@ -74,30 +78,32 @@ export async function loadConfig(
 /**
  * Saves crawl result to disk
  * @param crawlResult The crawl result to save
- * @param dir Directory to save the crawl result to
+ * @param dir Optional directory to save the crawl result to
  */
 export async function saveCrawlResult(
   crawlResult: CrawlStatusResponse,
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<void> {
-  await ensureDirectory(dir);
+  const targetDir = dir || (await getCurrentCrawlPath());
+  await ensureDirectory(targetDir);
   await fs.writeFile(
-    path.join(dir, "crawlResult.json"),
+    path.join(targetDir, "crawlResult.json"),
     JSON.stringify(crawlResult, null, 2)
   );
 }
 
 /**
  * Loads crawl result from disk
- * @param dir Directory to load the crawl result from
+ * @param dir Optional directory to load the crawl result from
  * @returns The loaded crawl result, or null if not found
  */
 export async function loadCrawlResult(
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<CrawlStatusResponse | null> {
+  const targetDir = dir || (await getCurrentCrawlPath());
   try {
     const content = await fs.readFile(
-      path.join(dir, "crawlResult.json"),
+      path.join(targetDir, "crawlResult.json"),
       "utf-8"
     );
     return JSON.parse(content);
@@ -109,30 +115,32 @@ export async function loadCrawlResult(
 /**
  * Saves categories to disk
  * @param categories The categories to save
- * @param dir Directory to save the categories to
+ * @param dir Optional directory to save the categories to
  */
 export async function saveCategories(
   categories: CategorySchema,
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<void> {
-  await ensureDirectory(dir);
+  const targetDir = dir || (await getCurrentCrawlPath());
+  await ensureDirectory(targetDir);
   await fs.writeFile(
-    path.join(dir, "categories.json"),
+    path.join(targetDir, "categories.json"),
     JSON.stringify(categories, null, 2)
   );
 }
 
 /**
  * Loads categories from disk
- * @param dir Directory to load the categories from
+ * @param dir Optional directory to load the categories from
  * @returns The loaded categories, or null if not found
  */
 export async function loadCategories(
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<CategorySchema | null> {
+  const targetDir = dir || (await getCurrentCrawlPath());
   try {
     const content = await fs.readFile(
-      path.join(dir, "categories.json"),
+      path.join(targetDir, "categories.json"),
       "utf-8"
     );
     return JSON.parse(content);
@@ -144,30 +152,32 @@ export async function loadCategories(
 /**
  * Saves identifier to disk
  * @param identifier The identifier to save
- * @param dir Directory to save the identifier to
+ * @param dir Optional directory to save the identifier to
  */
 export async function saveIdentifier(
   identifier: IdentifierSchema,
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<void> {
-  await ensureDirectory(dir);
+  const targetDir = dir || (await getCurrentCrawlPath());
+  await ensureDirectory(targetDir);
   await fs.writeFile(
-    path.join(dir, "identifier.json"),
+    path.join(targetDir, "identifier.json"),
     JSON.stringify(identifier, null, 2)
   );
 }
 
 /**
  * Loads identifier from disk
- * @param dir Directory to load the identifier from
+ * @param dir Optional directory to load the identifier from
  * @returns The loaded identifier, or null if not found
  */
 export async function loadIdentifier(
-  dir: string = DEFAULT_PATHS.currentCrawlDir
+  dir?: string
 ): Promise<IdentifierSchema | null> {
+  const targetDir = dir || (await getCurrentCrawlPath());
   try {
     const content = await fs.readFile(
-      path.join(dir, "identifier.json"),
+      path.join(targetDir, "identifier.json"),
       "utf-8"
     );
     return JSON.parse(content);
@@ -177,54 +187,93 @@ export async function loadIdentifier(
 }
 
 /**
- * Archives current crawl to history
- * @param identifier The identifier to use for the archive name
- * @returns The path to the archived directory
- */
-export async function archiveCrawl(
-  identifier: IdentifierSchema
-): Promise<string> {
-  await ensureDirectory(DEFAULT_PATHS.historyDir);
-
-  // Create timestamped directory name
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const archiveDir = path.join(
-    DEFAULT_PATHS.historyDir,
-    `${identifier.identifier}-${timestamp}`
-  );
-
-  // Move current crawl to archive
-  await fs.rename(DEFAULT_PATHS.currentCrawlDir, archiveDir);
-
-  // Create new empty current-crawl directory
-  await ensureDirectory(DEFAULT_PATHS.currentCrawlDir);
-
-  return archiveDir;
-}
-
-/**
- * Gets a list of archived crawls
+ * Gets a list of all crawls in history
  * @returns Array of directory names in the history directory
  */
-export async function listArchivedCrawls(): Promise<string[]> {
+export async function listCrawls(): Promise<string[]> {
   await ensureDirectory(DEFAULT_PATHS.historyDir);
   const entries = await fs.readdir(DEFAULT_PATHS.historyDir);
   return entries;
 }
 
 /**
- * Deletes a specific archived crawl
- * @param archiveName Name of the archive to delete
+ * Deletes a specific crawl
+ * @param crawlName Name of the crawl to delete
  */
-export async function deleteArchivedCrawl(archiveName: string): Promise<void> {
-  const archivePath = path.join(DEFAULT_PATHS.historyDir, archiveName);
-  await fs.rm(archivePath, { recursive: true });
+export async function deleteCrawl(crawlName: string): Promise<void> {
+  const crawlPath = path.join(DEFAULT_PATHS.historyDir, crawlName);
+  await fs.rm(crawlPath, { recursive: true });
+
+  // If this was the current crawl, clear the pointer
+  const currentPath = await getCurrentCrawlPath().catch(() => null);
+  if (currentPath === crawlPath) {
+    await fs.unlink(DEFAULT_PATHS.currentCrawlPointer);
+  }
 }
 
 /**
- * Deletes the current crawl
+ * Gets the current crawl directory path from the pointer
+ * @returns The path to the current crawl directory
  */
-export async function deleteCurrentCrawl(): Promise<void> {
-  await fs.rm(DEFAULT_PATHS.currentCrawlDir, { recursive: true });
-  await ensureDirectory(DEFAULT_PATHS.currentCrawlDir);
+export async function getCurrentCrawlPath(): Promise<string> {
+  const pointer = await loadConfig("currentCrawlPointer.json");
+  if (!pointer?.currentCrawlPath) {
+    throw new Error("No current crawl selected");
+  }
+  return pointer.currentCrawlPath;
+}
+
+/**
+ * Sets the current crawl pointer to a specific history directory
+ * @param historyPath The path to the history directory to set as current
+ */
+export async function setCurrentCrawlPointer(
+  historyPath: string
+): Promise<void> {
+  await saveConfig(
+    { currentCrawlPath: historyPath },
+    "currentCrawlPointer.json"
+  );
+}
+
+/**
+ * Creates a new crawl directory in history and sets it as current
+ * @param identifier The identifier for the new crawl
+ * @returns The path to the new crawl directory
+ */
+export async function createNewCrawl(
+  identifier: IdentifierSchema
+): Promise<string> {
+  await ensureDirectory(DEFAULT_PATHS.historyDir);
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const newCrawlDir = path.join(
+    DEFAULT_PATHS.historyDir,
+    `${identifier.identifier}-${timestamp}`
+  );
+
+  await ensureDirectory(newCrawlDir);
+  await setCurrentCrawlPointer(newCrawlDir);
+
+  return newCrawlDir;
+}
+
+/**
+ * Saves crawl result to history and sets it as current
+ * @param crawlResult The crawl result to save
+ * @returns The path to the new crawl directory
+ */
+export async function saveCrawlToHistory(
+  crawlResult: CrawlStatusResponse
+): Promise<string> {
+  // Create a temporary identifier for the directory name
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const tempId = `crawl-${timestamp}`;
+  const newCrawlDir = path.join(DEFAULT_PATHS.historyDir, tempId);
+
+  await ensureDirectory(newCrawlDir);
+  await saveCrawlResult(crawlResult, newCrawlDir);
+  await setCurrentCrawlPointer(newCrawlDir);
+
+  return newCrawlDir;
 }

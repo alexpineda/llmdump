@@ -94,7 +94,6 @@ export async function crawlWebsite(
     throw new Error("Firecrawl API key is required");
   }
 
-  console.log(`Crawling ${url} with limit ${options.limit || "default"}...`);
   return await crawl(url, options, apiKey);
 }
 
