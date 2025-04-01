@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import type {
   CrawlStatusResponse,
   CategorySchema,
@@ -13,6 +14,7 @@ export const DEFAULT_PATHS = {
   dataDir: ".data",
   currentCrawlDir: ".data/current-crawl",
   historyDir: ".data/history",
+  configDir: path.join(os.homedir(), ".llmdump"),
 };
 
 /**
@@ -24,6 +26,48 @@ export async function ensureDirectory(dir: string): Promise<void> {
     await fs.access(dir);
   } catch {
     await fs.mkdir(dir, { recursive: true });
+  }
+}
+
+/**
+ * Ensures the config directory exists in the user's home directory
+ * @returns Path to the config directory
+ */
+export async function ensureConfigDirectory(): Promise<string> {
+  await ensureDirectory(DEFAULT_PATHS.configDir);
+  return DEFAULT_PATHS.configDir;
+}
+
+/**
+ * Saves config to the user's home directory
+ * @param config The configuration to save
+ * @param filename The name of the config file
+ */
+export async function saveConfig(
+  config: Record<string, any>,
+  filename: string = "config.json"
+): Promise<void> {
+  const configDir = await ensureConfigDirectory();
+  await fs.writeFile(
+    path.join(configDir, filename),
+    JSON.stringify(config, null, 2)
+  );
+}
+
+/**
+ * Loads config from the user's home directory
+ * @param filename The name of the config file
+ * @returns The loaded config, or null if not found
+ */
+export async function loadConfig(
+  filename: string = "config.json"
+): Promise<Record<string, any> | null> {
+  const configDir = await ensureConfigDirectory();
+  try {
+    const content = await fs.readFile(path.join(configDir, filename), "utf-8");
+    return JSON.parse(content);
+  } catch {
+    return null;
   }
 }
 

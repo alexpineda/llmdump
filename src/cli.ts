@@ -12,9 +12,56 @@ import { exec } from "child_process";
 import fs from "node:fs/promises";
 import dotenv from "dotenv";
 import * as lib from "./lib/index.js";
+import { createRequire } from "node:module";
+import semver from "semver";
+import https from "node:https";
+
+// Create require function for ES modules
+const require = createRequire(import.meta.url);
+// Get package version
+const packageJson = require("../package.json");
+const currentVersion = packageJson.version;
 
 // Load environment variables
 dotenv.config();
+
+/**
+ * Checks if a newer version of the package is available
+ */
+async function checkForUpdates(): Promise<{
+  hasUpdate: boolean;
+  latestVersion: string;
+}> {
+  return new Promise((resolve) => {
+    const req = https.get(
+      "https://registry.npmjs.org/llmdump/latest",
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          try {
+            const latest = JSON.parse(data);
+            const latestVersion = latest.version;
+            const hasUpdate = semver.gt(latestVersion, currentVersion);
+            resolve({ hasUpdate, latestVersion });
+          } catch (error) {
+            // If there's an error, assume no update is needed
+            resolve({ hasUpdate: false, latestVersion: currentVersion });
+          }
+        });
+      }
+    );
+
+    req.on("error", () => {
+      // If there's an error, assume no update is needed
+      resolve({ hasUpdate: false, latestVersion: currentVersion });
+    });
+
+    req.end();
+  });
+}
 
 // Parse command line arguments
 const argv = yargs(hideBin(process.argv))
@@ -36,8 +83,22 @@ const firecrawlApiKey = (argv["firecrawl-key"] ||
 const openaiApiKey = (argv["openai-key"] ||
   process.env.OPENAI_API_KEY) as string;
 
+// Load API keys from config if not provided
+let configKeys: Record<string, any> | null = null;
+if (!firecrawlApiKey || !openaiApiKey) {
+  try {
+    configKeys = await lib.storage.loadConfig();
+  } catch (error) {
+    // Ignore errors - we'll prompt for keys if needed
+  }
+}
+
+// If API keys are still missing, try to get them from config
+const firecrawlKey = firecrawlApiKey || (configKeys?.firecrawlApiKey as string);
+const openaiKey = openaiApiKey || (configKeys?.openaiApiKey as string);
+
 // Validate API keys
-if (!firecrawlApiKey) {
+if (!firecrawlKey) {
   console.error(
     chalk.red(
       "Please provide an API key for Firecrawl either as an argument with --firecrawl-key or as an environment variable"
@@ -46,7 +107,7 @@ if (!firecrawlApiKey) {
   process.exit(1);
 }
 
-if (!openaiApiKey) {
+if (!openaiKey) {
   console.error(
     chalk.red(
       "Please provide an API key for OpenAI either as an argument with --openai-key or as an environment variable"
@@ -55,9 +116,21 @@ if (!openaiApiKey) {
   process.exit(1);
 }
 
+// Save keys to config if they were provided via arguments or env vars
+if (
+  (firecrawlApiKey || openaiApiKey) &&
+  (!configKeys || !configKeys.firecrawlApiKey || !configKeys.openaiApiKey)
+) {
+  await lib.storage.saveConfig({
+    ...configKeys,
+    firecrawlApiKey: firecrawlKey,
+    openaiApiKey: openaiKey,
+  });
+}
+
 // Initialize OpenAI client
 const openai = createOpenAI({
-  apiKey: openaiApiKey,
+  apiKey: openaiKey,
 });
 
 // Initialize state variables
@@ -68,11 +141,35 @@ let identifier: lib.IdentifierSchema;
 // Initialize data directories
 (async () => {
   try {
+    // Ensure config directory in user's home
+    await lib.storage.ensureConfigDirectory();
+
+    // Ensure existing directories
     await lib.storage.ensureDirectory(lib.storage.DEFAULT_PATHS.dataDir);
     await lib.storage.ensureDirectory(
       lib.storage.DEFAULT_PATHS.currentCrawlDir
     );
     await lib.storage.ensureDirectory(lib.storage.DEFAULT_PATHS.historyDir);
+
+    // Check for updates
+    const { hasUpdate, latestVersion } = await checkForUpdates();
+    if (hasUpdate) {
+      console.log(
+        boxen(
+          chalk.yellow.bold(`Update Available! 🚀`) +
+            `\n\n` +
+            chalk.gray(`Current version: ${currentVersion}`) +
+            `\n` +
+            chalk.green(`Latest version: ${latestVersion}`) +
+            `\n\n` +
+            chalk.blue(`Run the following command to update:`) +
+            `\n` +
+            chalk.white.bold(`bun install -g llmdump`),
+          { padding: 1, borderColor: "yellow", margin: 1 }
+        )
+      );
+    }
+
     await showMainMenu();
   } catch (error) {
     console.error(chalk.red("Error initializing application:"), error);
@@ -162,7 +259,7 @@ async function startNewCrawl() {
 
   try {
     // Perform the crawl
-    crawlResult = await lib.crawl.crawlWebsite(url, { limit }, firecrawlApiKey);
+    crawlResult = await lib.crawl.crawlWebsite(url, { limit }, firecrawlKey);
 
     // Save crawl result
     await lib.storage.saveCrawlResult(crawlResult);
@@ -346,7 +443,9 @@ async function showMainMenu() {
         "\n" +
         chalk.gray(
           "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
-        ),
+        ) +
+        "\n" +
+        chalk.gray(`v${currentVersion}`),
       { padding: 1 }
     )
   );
@@ -371,6 +470,7 @@ async function showMainMenu() {
         { name: "View Archived Crawls", value: "archives" },
         { name: "Delete Archived Crawl", value: "delete" },
         { name: "Open Data Directory", value: "open" },
+        { name: "Manage Configuration", value: "config" },
         { name: "Exit", value: "exit" },
       ],
     },
@@ -391,6 +491,9 @@ async function showMainMenu() {
       break;
     case "open":
       await openDataDirectory();
+      break;
+    case "config":
+      await manageConfiguration();
       break;
     case "exit":
       console.log(chalk.blue("Goodbye!"));
@@ -901,4 +1004,123 @@ async function openDataDirectory() {
   }
 
   await showMainMenu();
+}
+
+/**
+ * Manages configuration settings
+ */
+async function manageConfiguration() {
+  // Load current config
+  const config = (await lib.storage.loadConfig()) || {};
+
+  console.log(chalk.blue("\nCurrent Configuration:"));
+  console.log(
+    chalk.gray("API Keys are stored in:"),
+    chalk.green(lib.storage.DEFAULT_PATHS.configDir)
+  );
+
+  if (config.firecrawlApiKey) {
+    console.log(
+      chalk.gray("Firecrawl API Key:"),
+      chalk.green("•".repeat(5) + config.firecrawlApiKey.slice(-4))
+    );
+  } else {
+    console.log(chalk.gray("Firecrawl API Key:"), chalk.red("Not set"));
+  }
+
+  if (config.openaiApiKey) {
+    console.log(
+      chalk.gray("OpenAI API Key:"),
+      chalk.green("•".repeat(5) + config.openaiApiKey.slice(-4))
+    );
+  } else {
+    console.log(chalk.gray("OpenAI API Key:"), chalk.red("Not set"));
+  }
+
+  const { action } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "action",
+      message: "What would you like to do?",
+      choices: [
+        { name: "Update Firecrawl API Key", value: "firecrawl" },
+        { name: "Update OpenAI API Key", value: "openai" },
+        { name: "Open Config Directory", value: "open" },
+        { name: "Back to Main Menu", value: "back" },
+      ],
+    },
+  ]);
+
+  switch (action) {
+    case "firecrawl":
+      const { firecrawlKey } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "firecrawlKey",
+          message: "Enter your Firecrawl API Key:",
+          validate: (input: string) =>
+            input.trim() !== "" || "API Key cannot be empty",
+        },
+      ]);
+
+      await lib.storage.saveConfig({
+        ...config,
+        firecrawlApiKey: firecrawlKey.trim(),
+      });
+      console.log(chalk.green("Firecrawl API Key updated successfully!"));
+      await manageConfiguration();
+      break;
+
+    case "openai":
+      const { openaiKey } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "openaiKey",
+          message: "Enter your OpenAI API Key:",
+          validate: (input: string) =>
+            input.trim() !== "" || "API Key cannot be empty",
+        },
+      ]);
+
+      await lib.storage.saveConfig({
+        ...config,
+        openaiApiKey: openaiKey.trim(),
+      });
+      console.log(chalk.green("OpenAI API Key updated successfully!"));
+      await manageConfiguration();
+      break;
+
+    case "open":
+      const { platform } = process;
+      let command = "";
+
+      switch (platform) {
+        case "darwin":
+          command = "open";
+          break;
+        case "win32":
+          command = "explorer";
+          break;
+        default:
+          command = "xdg-open";
+      }
+
+      try {
+        await runTerminalCommand(
+          `${command} ${lib.storage.DEFAULT_PATHS.configDir}`
+        );
+        console.log(
+          chalk.green(`Opened ${lib.storage.DEFAULT_PATHS.configDir} directory`)
+        );
+      } catch (error) {
+        console.error(chalk.red("Error opening config directory:"), error);
+      }
+
+      await manageConfiguration();
+      break;
+
+    case "back":
+      await showMainMenu();
+      break;
+  }
 }

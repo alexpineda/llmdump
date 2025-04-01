@@ -1,0 +1,21 @@
+LLMDump: A Node.js CLI tool for aggregating web sources into markdown.
+
+FEATURES:
+- Crawls websites and extracts content
+- Uses AI to categorize content
+- Cleans and formats markdown for LLM consumption
+- Manages crawled content with archive capabilities
+
+STRUCTURE:
+- CLI interface: src/cli.ts
+- Library modules in src/lib/
+  - ai.ts: OpenAI interactions
+  - crawl.ts: Website crawling
+  - storage.ts: File operations
+  - processing.ts: Content processing
+  - types.ts: Shared types and schemas
+
+DEVELOPMENT WITH BUN:
+- Run: bun run src/cli.ts
+- Build: bun run build
+- Check: bun run check
