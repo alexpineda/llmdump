@@ -224,7 +224,6 @@ async function showMainMenu(clear = true) {
         { name: "Start New Crawl", value: "new" },
         { name: "Open Existing Crawl", value: "open" },
         { name: "Delete Crawl", value: "delete" },
-        { name: "Open Data Directory", value: "directory" },
         { name: "Manage Configuration", value: "config" },
         { name: "Exit", value: "exit" },
       ],
@@ -240,9 +239,6 @@ async function showMainMenu(clear = true) {
       break;
     case "delete":
       await deleteCrawl();
-      break;
-    case "directory":
-      await openDataDirectory();
       break;
     case "config":
       await manageConfiguration();
@@ -310,13 +306,14 @@ async function startNewCrawl() {
 
     // Generate categories
     categories = await lib.ai.categorizeSites(documents, openai);
-    await lib.storage.saveCategories(categories, crawlPath);
-
-    // Save original categories for reference
-    await fs.writeFile(
-      path.join(crawlPath, "original-categories.json"),
-      JSON.stringify(categories, null, 2)
+    await lib.storage.saveCategories(
+      categories,
+      crawlPath,
+      "original-categories.json"
     );
+
+    // Save to the working file as well
+    await lib.storage.saveCategories(categories, crawlPath, "categories.json");
 
     // Save identifier
     await lib.storage.saveIdentifier(identifier, crawlPath);
@@ -341,6 +338,7 @@ async function startNewCrawl() {
 async function openExistingCrawl() {
   const crawls = await lib.storage.listCrawls();
   if (crawls.length === 0) {
+    console.clear();
     console.log(chalk.yellow("No existing crawls found."));
     await showMainMenu(false);
     return;
@@ -658,13 +656,10 @@ async function viewExpandedCategories() {
           }
 
           // Save updated categories
-          await lib.storage.saveCategories(categories);
-          await fs.writeFile(
-            path.join(
-              await lib.storage.getCurrentCrawlPath(),
-              "finalized-categories.json"
-            ),
-            JSON.stringify(categories, null, 2)
+          await lib.storage.saveCategories(
+            categories,
+            await lib.storage.getCurrentCrawlPath(),
+            "categories.json"
           );
 
           // Show the changes
@@ -767,13 +762,10 @@ async function viewExpandedCategories() {
         }
 
         // Save pruned categories
-        await lib.storage.saveCategories(categories);
-        await fs.writeFile(
-          path.join(
-            await lib.storage.getCurrentCrawlPath(),
-            "finalized-categories.json"
-          ),
-          JSON.stringify(categories, null, 2)
+        await lib.storage.saveCategories(
+          categories,
+          await lib.storage.getCurrentCrawlPath(),
+          "categories.json"
         );
 
         console.log(chalk.green("Sites pruned successfully!"));

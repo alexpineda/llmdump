@@ -24,6 +24,19 @@ export async function categorizeSites(
     throw new Error("No sites provided for categorization");
   }
 
+  // For single-page crawls, use a single category based on the title
+  if (sites.length === 1) {
+    const site = sites[0];
+    return {
+      categories: [
+        {
+          category: site.title,
+          refUrls: [site.url],
+        },
+      ],
+    };
+  }
+
   const result = await generateObject({
     model: openai("gpt-4o-mini"),
     schema: categorySchema,
@@ -33,6 +46,13 @@ export async function categorizeSites(
           
       Categories should be relevant to the content of the links.
       We'll use the categories to concatenate the content of the links together.
+  
+      Guidelines for categorization:
+      1. For single-page crawls, use a single high-level category that best describes the main topic
+      2. Avoid creating multiple categories for the same content
+      3. Categories should be broad enough to group related content but specific enough to be meaningful
+      4. If all content is from the same page, use a single category
+      5. Only create multiple categories if the content is truly distinct and from different pages
   
       Your output should be a JSON object with the following fields:
       - categories: an array of objects with the following fields:

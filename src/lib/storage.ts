@@ -82,13 +82,19 @@ export async function loadConfig(
  */
 export async function saveCrawlResult(
   crawlResult: CrawlStatusResponse,
-  dir?: string
+  dir?: string,
+  schemaVersion: number = 1
 ): Promise<void> {
   const targetDir = dir || (await getCurrentCrawlPath());
   await ensureDirectory(targetDir);
+
+  const data = {
+    crawlResult,
+    schemaVersion,
+  };
   await fs.writeFile(
     path.join(targetDir, "crawlResult.json"),
-    JSON.stringify(crawlResult, null, 2)
+    JSON.stringify(data, null, 2)
   );
 }
 
@@ -106,7 +112,8 @@ export async function loadCrawlResult(
       path.join(targetDir, "crawlResult.json"),
       "utf-8"
     );
-    return JSON.parse(content);
+    const data = JSON.parse(content);
+    return data.crawlResult;
   } catch {
     return null;
   }
@@ -116,15 +123,17 @@ export async function loadCrawlResult(
  * Saves categories to disk
  * @param categories The categories to save
  * @param dir Optional directory to save the categories to
+ * @param filename The name of the file to save to (defaults to original-categories.json)
  */
 export async function saveCategories(
   categories: CategorySchema,
-  dir?: string
+  dir?: string,
+  filename: string = "original-categories.json"
 ): Promise<void> {
   const targetDir = dir || (await getCurrentCrawlPath());
   await ensureDirectory(targetDir);
   await fs.writeFile(
-    path.join(targetDir, "categories.json"),
+    path.join(targetDir, filename),
     JSON.stringify(categories, null, 2)
   );
 }
@@ -132,17 +141,16 @@ export async function saveCategories(
 /**
  * Loads categories from disk
  * @param dir Optional directory to load the categories from
+ * @param filename The name of the file to load from (defaults to categories.json)
  * @returns The loaded categories, or null if not found
  */
 export async function loadCategories(
-  dir?: string
+  dir?: string,
+  filename: string = "categories.json"
 ): Promise<CategorySchema | null> {
   const targetDir = dir || (await getCurrentCrawlPath());
   try {
-    const content = await fs.readFile(
-      path.join(targetDir, "categories.json"),
-      "utf-8"
-    );
+    const content = await fs.readFile(path.join(targetDir, filename), "utf-8");
     return JSON.parse(content);
   } catch {
     return null;
@@ -192,8 +200,12 @@ export async function loadIdentifier(
  */
 export async function listCrawls(): Promise<string[]> {
   await ensureDirectory(DEFAULT_PATHS.historyDir);
-  const entries = await fs.readdir(DEFAULT_PATHS.historyDir);
-  return entries;
+  const entries = await fs.readdir(DEFAULT_PATHS.historyDir, {
+    withFileTypes: true,
+  });
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
 }
 
 /**
