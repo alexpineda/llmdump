@@ -257,13 +257,14 @@ async function showMainMenu(clear = true) {
  * Starts a new crawl
  */
 async function startNewCrawl() {
-  // Get URL and limit from user
-  const { url, limit } = await inquirer.prompt([
+  // Get URL from user first
+  const { url } = await inquirer.prompt([
     {
       type: "input",
       name: "url",
       message: "Enter the URL to crawl:",
       validate: (input: string) => {
+        if (!input.trim()) return true;
         try {
           new URL(input);
           return true;
@@ -272,6 +273,15 @@ async function startNewCrawl() {
         }
       },
     },
+  ]);
+
+  if (!url.trim()) {
+    await showMainMenu();
+    return;
+  }
+
+  // Get limit after confirming URL
+  const { limit } = await inquirer.prompt([
     {
       type: "number",
       name: "limit",
