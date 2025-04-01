@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { crawl } from "./lib/firecrawl.js";
+import { crawl } from "./src/lib/firecrawl.js";
 import { generateObject, generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";

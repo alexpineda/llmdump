@@ -250,8 +250,8 @@ async function startNewCrawl() {
     {
       type: "number",
       name: "limit",
-      message: "Enter the number of pages to crawl:",
-      default: 10,
+      message: "Enter the maximum number of pages to crawl:",
+      default: 50,
     },
   ]);
 
@@ -286,9 +286,6 @@ async function startNewCrawl() {
 
     // Sanitize categories
     categories = lib.processing.sanitizeCategories(categories, crawlResult);
-
-    // Show categories summary
-    await showCategoriesSummary();
 
     // Show processing menu
     await showProcessingMenu();
@@ -362,8 +359,6 @@ async function continueFromCurrentCrawl() {
     // Sanitize categories
     categories = lib.processing.sanitizeCategories(categories, crawlResult);
 
-    console.log(chalk.green(`Continuing from crawl: ${identifier.identifier}`));
-    await showCategoriesSummary();
     await showProcessingMenu();
   } catch (error) {
     console.error(chalk.red("Error loading current crawl:"), error);
@@ -382,11 +377,9 @@ async function showCategoriesSummary() {
 
   console.log(
     chalk.green(
-      `Documents found: ${
+      `Documents: ${
         categories.categories.flatMap((c) => c.refUrls).length
-      } - Categories found: ${
-        categories.categories.length
-      } ~ ${allTokens} tokens`
+      } - Categories: ${categories.categories.length} ~ ${allTokens} tokens`
     )
   );
 
@@ -397,7 +390,7 @@ async function showCategoriesSummary() {
     );
     console.log(
       chalk.green(
-        `Category: ${category.category} (${category.refUrls.length}) ~ ${tokens} tokens`
+        `${category.category} (${category.refUrls.length} documents) ~ ${tokens} tokens`
       )
     );
   }
@@ -435,25 +428,28 @@ async function writeDocumentsToFile(concatAction: "single" | "multiple") {
 /**
  * Shows the main menu
  */
-async function showMainMenu() {
-  console.clear();
-  console.log(
-    boxen(
-      chalk.blue("LLMDump") +
-        "\n" +
-        chalk.gray(
-          "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
-        ) +
-        "\n" +
-        chalk.gray(`v${currentVersion}`),
-      { padding: 1 }
-    )
-  );
-  console.log(
-    chalk.yellow(
-      "Warning: This is alpha software. It is not ready for production use."
-    )
-  );
+async function showMainMenu(clear = true) {
+  if (clear) {
+    console.clear();
+
+    console.log(
+      boxen(
+        chalk.blue("LLMDump") +
+          "\n" +
+          chalk.gray(
+            "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs"
+          ) +
+          "\n" +
+          chalk.gray(`v${currentVersion}`),
+        { padding: 1 }
+      )
+    );
+    console.log(
+      chalk.yellow(
+        "Warning: This is alpha software. It is not ready for production use."
+      )
+    );
+  }
 
   const currentCrawlId = await getCurrentCrawlIdIfAny();
 
@@ -466,11 +462,11 @@ async function showMainMenu() {
         ...(currentCrawlId
           ? [{ name: `Continue from ${currentCrawlId}`, value: "continue" }]
           : []),
-        { name: "Start New Crawl", value: "new" },
-        { name: "View Archived Crawls", value: "archives" },
-        { name: "Delete Archived Crawl", value: "delete" },
-        { name: "Open Data Directory", value: "open" },
-        { name: "Manage Configuration", value: "config" },
+        { name: "Crawl web documents", value: "new" },
+        { name: "Open existing crawls", value: "archives" },
+        { name: "Delete archived crawls", value: "delete" },
+        { name: "Open data directory", value: "open" },
+        { name: "Manage configuration", value: "config" },
         { name: "Exit", value: "exit" },
       ],
     },
@@ -505,15 +501,16 @@ async function showMainMenu() {
  * Shows the processing menu
  */
 async function showProcessingMenu() {
+  await showCategoriesSummary();
+
   const { action } = await inquirer.prompt([
     {
       type: "list",
       name: "action",
       message: "What would you like to do?",
       choices: [
-        { name: "View Documents Summary", value: "summary" },
-        { name: "View & Prune Documents", value: "view" },
-        { name: "Clean & Concat Documents", value: "concat" },
+        { name: "View/Prune Documents & Categories", value: "view" },
+        { name: "Export Documents", value: "concat" },
         { name: "Archive This Crawl", value: "archive" },
         { name: "Back to Main Menu", value: "back" },
       ],
@@ -525,10 +522,7 @@ async function showProcessingMenu() {
       await archiveCrawl();
       await showMainMenu();
       break;
-    case "summary":
-      await showCategoriesSummary();
-      await showProcessingMenu();
-      break;
+
     case "view":
       await viewExpandedCategories();
       await showProcessingMenu();
@@ -616,8 +610,12 @@ async function viewExpandedCategories() {
         name: "action",
         message: `Navigation - ${currentCategory.category} ~ ${estTokens} tokens`,
         choices: [
-          { name: "Next Page", value: "next" },
-          { name: "Previous Page", value: "prev" },
+          ...(currentIndex < categoryContent.length - 1
+            ? [{ name: "Next Page", value: "next" }]
+            : []),
+          ...(currentIndex > 0
+            ? [{ name: "Previous Page", value: "prev" }]
+            : []),
           {
             name: `Prune Sites from ${currentCategory.category}`,
             value: "prune",
@@ -718,7 +716,13 @@ async function viewExpandedCategories() {
             categoryContent.length,
             ...newCategoryContent
           );
-          currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+
+          // Adjust current index if needed
+          if (categoryContent.length === 0) {
+            done = true; // Exit if no categories left
+          } else {
+            currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+          }
 
           // Save updated categories
           await lib.storage.saveCategories(categories);
@@ -794,8 +798,13 @@ async function viewExpandedCategories() {
           selectedSites
         );
 
-        // Update the content for this category
-        const updatedCategoryContent = categories.categories.map((c) => {
+        // Remove empty categories
+        categories = {
+          categories: categories.categories.filter((c) => c.refUrls.length > 0),
+        };
+
+        // Rebuild the entire categoryContent array from scratch
+        const newContent = categories.categories.map((c) => {
           const title = `## ${c.category}`;
           const formattedSiteData = c.refUrls.map((u) => {
             const siteData = crawlResult.data.find(
@@ -814,18 +823,15 @@ async function viewExpandedCategories() {
           return `${title}\n${formattedSiteData.join("\n\n")}`;
         });
 
-        // Remove empty categories
-        categories = {
-          categories: categories.categories.filter((c) => c.refUrls.length > 0),
-        };
+        // Replace the content of categoryContent
+        categoryContent.splice(0, categoryContent.length, ...newContent);
 
-        // Replace content array with updated content
-        categoryContent.splice(
-          0,
-          categoryContent.length,
-          ...updatedCategoryContent
-        );
-        currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+        // Adjust current index if needed
+        if (categoryContent.length === 0) {
+          done = true; // Exit if no categories left
+        } else {
+          currentIndex = Math.min(currentIndex, categoryContent.length - 1);
+        }
 
         // Save pruned categories
         await lib.storage.saveCategories(categories);
@@ -841,6 +847,7 @@ async function viewExpandedCategories() {
         break;
       case "back":
         done = true;
+        console.clear();
         break;
     }
   }
@@ -852,8 +859,8 @@ async function viewExpandedCategories() {
 async function viewArchivedCrawls() {
   const archives = await lib.storage.listArchivedCrawls();
   if (archives.length === 0) {
-    console.log(chalk.yellow("No archived crawls found."));
-    await showMainMenu();
+    console.log(chalk.yellow("No existing crawls found."));
+    await showMainMenu(false);
     return;
   }
 
@@ -861,7 +868,7 @@ async function viewArchivedCrawls() {
     {
       type: "list",
       name: "selectedArchive",
-      message: "Select an archived crawl to view:",
+      message: "Select an existing crawl to view:",
       choices: [...archives, "cancel"],
     },
   ]);
@@ -941,7 +948,7 @@ async function viewArchivedCrawls() {
 async function deleteArchivedCrawl() {
   const archives = await lib.storage.listArchivedCrawls();
   if (archives.length === 0) {
-    console.log(chalk.yellow("No archived crawls found."));
+    console.log(chalk.yellow("No existing crawls found."));
     await showMainMenu();
     return;
   }
@@ -1009,7 +1016,10 @@ async function openDataDirectory() {
 /**
  * Manages configuration settings
  */
-async function manageConfiguration() {
+async function manageConfiguration(clear = true) {
+  if (clear) {
+    console.clear();
+  }
   // Load current config
   const config = (await lib.storage.loadConfig()) || {};
 
@@ -1058,10 +1068,14 @@ async function manageConfiguration() {
           type: "input",
           name: "firecrawlKey",
           message: "Enter your Firecrawl API Key:",
-          validate: (input: string) =>
-            input.trim() !== "" || "API Key cannot be empty",
         },
       ]);
+
+      if (!firecrawlKey.trim()) {
+        console.log(chalk.yellow("No API key entered, returning to menu."));
+        await manageConfiguration();
+        break;
+      }
 
       await lib.storage.saveConfig({
         ...config,
@@ -1077,10 +1091,14 @@ async function manageConfiguration() {
           type: "input",
           name: "openaiKey",
           message: "Enter your OpenAI API Key:",
-          validate: (input: string) =>
-            input.trim() !== "" || "API Key cannot be empty",
         },
       ]);
+
+      if (!openaiKey.trim()) {
+        console.log(chalk.yellow("No API key entered, returning to menu."));
+        await manageConfiguration();
+        break;
+      }
 
       await lib.storage.saveConfig({
         ...config,

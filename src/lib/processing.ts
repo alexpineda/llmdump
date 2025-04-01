@@ -34,7 +34,7 @@ export function sanitizeCategories(
  * @returns Estimated token count
  */
 export function estimateTokens(content: string): number {
-  return (Math.ceil(content.length / 4) * 4) / 5; // 4/5 is cleaned document estimate
+  return Math.ceil(Math.ceil(content.length / 4) * (4 / 5)); // 4/5 is cleaned document estimate
 }
 
 /**
