@@ -144,7 +144,7 @@ let identifier: lib.IdentifierSchema;
     // Ensure config directory in user's home
     await lib.storage.ensureConfigDirectory();
 
-    // Ensure existing directories
+    // Ensure data directories
     await lib.storage.ensureDirectory(lib.storage.DEFAULT_PATHS.dataDir);
     await lib.storage.ensureDirectory(
       lib.storage.DEFAULT_PATHS.currentCrawlDir

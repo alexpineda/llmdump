@@ -11,10 +11,10 @@ import type {
  * Default paths for data storage
  */
 export const DEFAULT_PATHS = {
-  dataDir: ".data",
-  currentCrawlDir: ".data/current-crawl",
-  historyDir: ".data/history",
   configDir: path.join(os.homedir(), ".llmdump"),
+  dataDir: path.join(os.homedir(), ".llmdump", "data"),
+  currentCrawlDir: path.join(os.homedir(), ".llmdump", "data", "current-crawl"),
+  historyDir: path.join(os.homedir(), ".llmdump", "data", "history"),
 };
 
 /**
