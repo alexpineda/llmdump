@@ -179,7 +179,8 @@ describe("Processing Module", () => {
       const result = await processDocument(
         "https://example.com/page1",
         mockCrawlResult,
-        mockOpenAI
+        mockOpenAI,
+        false
       );
 
       expect(result).not.toBeNull();
@@ -192,7 +193,8 @@ describe("Processing Module", () => {
       const result = await processDocument(
         "https://nonexistent.com",
         mockCrawlResult,
-        mockOpenAI
+        mockOpenAI,
+        false
       );
       expect(result).toBeNull();
     });
@@ -214,7 +216,8 @@ describe("Processing Module", () => {
       const result = await processDocument(
         "https://example.com/incomplete",
         incompleteResult,
-        mockOpenAI
+        mockOpenAI,
+        false
       );
       expect(result).toBeNull();
     });
@@ -226,7 +229,8 @@ describe("Processing Module", () => {
       const results = await processCategoryContent(
         category,
         mockCrawlResult,
-        mockOpenAI
+        mockOpenAI,
+        false
       );
 
       expect(results).toHaveLength(2);
@@ -239,7 +243,8 @@ describe("Processing Module", () => {
       const results = await processCategoryContent(
         emptyCategory,
         mockCrawlResult,
-        mockOpenAI
+        mockOpenAI,
+        false
       );
 
       expect(results).toHaveLength(0);
@@ -313,7 +318,8 @@ describe("Processing Module", () => {
         mockCrawlResult,
         outputDir,
         mockOpenAI,
-        "single"
+        "single",
+        false
       );
 
       expect(mockFunctions.writeFileMock).toHaveBeenCalledTimes(1);
@@ -335,7 +341,8 @@ describe("Processing Module", () => {
         mockCrawlResult,
         outputDir,
         mockOpenAI,
-        "multiple"
+        "multiple",
+        false
       );
 
       expect(mockFunctions.writeFileMock).toHaveBeenCalledTimes(2);
@@ -367,7 +374,8 @@ describe("Processing Module", () => {
         mockCrawlResult,
         outputDir,
         mockOpenAI,
-        "multiple"
+        "multiple",
+        false
       );
 
       expect(mockFunctions.writeFileMock).not.toHaveBeenCalled();
