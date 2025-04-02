@@ -1,6 +1,6 @@
 {
   "name": "llmdump",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs",
   "module": "src/cli.ts",
   "type": "module",
