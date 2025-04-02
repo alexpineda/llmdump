@@ -15,12 +15,23 @@ import * as lib from "./lib/index.js";
 import { createRequire } from "node:module";
 import semver from "semver";
 import https from "node:https";
+import { fileURLToPath } from "node:url";
 
 // Create require function for ES modules
 const require = createRequire(import.meta.url);
 // Get package version
-const packageJson = require("../package.json");
-const currentVersion = packageJson.version;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+let currentVersion = "unknown";
+
+try {
+  const packageJson = JSON.parse(
+    await fs.readFile(path.join(__dirname, "..", "package.json"), "utf-8")
+  );
+  currentVersion = packageJson.version;
+} catch (error) {
+  console.warn("Warning: Could not read package.json version");
+}
 
 // Load environment variables
 dotenv.config();
