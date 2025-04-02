@@ -13,7 +13,7 @@ import type {
 export const DEFAULT_PATHS = {
   configDir: path.join(os.homedir(), ".llmdump"),
   dataDir: path.join(os.homedir(), ".llmdump", "data"),
-  historyDir: path.join(os.homedir(), ".llmdump", "data", "history"),
+  historyDir: path.join(os.homedir(), ".llmdump", "data"),
   currentCrawlPointer: path.join(
     os.homedir(),
     ".llmdump",

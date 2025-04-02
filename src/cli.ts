@@ -286,7 +286,9 @@ async function startNewCrawl() {
     },
   ]);
 
-  console.log(chalk.blue(`Crawling ${url} with limit ${limit}...`));
+  console.log(
+    chalk.blue(`Firecrawl is crawling ${url} with limit ${limit}...`)
+  );
 
   try {
     // Perform the crawl
@@ -844,8 +846,9 @@ async function showCategoriesSummary() {
     crawlResult
   );
 
+  console.log("");
   console.log(
-    chalk.green(
+    chalk.underline(
       `Documents: ${
         categories.categories.flatMap((c) => c.refUrls).length
       } - Categories: ${categories.categories.length} ~ ${allTokens} tokens`
@@ -862,6 +865,7 @@ async function showCategoriesSummary() {
         `${category.category} (${category.refUrls.length} documents) ~ ${tokens} tokens`
       )
     );
+    console.log("");
   }
 }
 
