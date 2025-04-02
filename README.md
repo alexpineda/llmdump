@@ -1,23 +1,13 @@
-# 🔥 LLMDump
-
-```
-  _     _     __  __ ____
- | |   | |   |  \/  |  _ \ _   _ _ __ ___  _ __
- | |   | |   | |\/| | | | | | | | '_ ` _ \| '_ \
- | |___| |___| |  | | |_| | |_| | | | | | | |_) |
- |_____|_____|_|  |_|____/ \__,_|_| |_| |_| .__/
-                                          |_|
-```
+# 💩 LLMDump
 
 > Automatically crawl documentation, clean up extra markup, and write to markdown for use with LLMs
 
 ## 🚀 Features
 
 - 🔍 Crawl documentation sites with configurable depth
-- 🧹 Clean up extra markup and formatting
-- 📚 Automatically categorize content
-- 📝 Generate clean markdown files
-- 💾 Archive and manage multiple crawls
+- 🧹 AI Clean up of extra markup and formatting (optional)
+- 📚 Automatically categorizes content for better splitting into token friendly chunks
+- 📝 Export raw or AI cleaned markdown files
 - 🔄 Interactive document pruning and category splitting
 - 📊 Token estimation for LLM context windows
 
@@ -49,135 +39,69 @@ llmdump --firecrawl-key "your-key" --openai-key "your-key"
 
 ## 🎯 Usage
 
-### Basic Flow
+### Main Menu
+
+When you run `llmdump`, you'll see the main menu with these options:
 
 ```
 ┌─────────────────┐
-│   Start Crawl   │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  View Summary   │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  Clean & Save   │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│    Archive      │
+│     LLMDump     │
+│ v[current-ver]  │
 └─────────────────┘
+
+? What would you like to do?
+❯ Start new crawl
+  Open existing crawl
+  Delete crawl
+  Manage configuration
+  Exit
 ```
 
-### Examples
+### Start New Crawl
 
-1. Start a new crawl:
+1. Enter the URL to crawl
+2. Set the maximum number of pages to crawl (default: 50)
+3. Wait for crawling and AI processing to complete
+4. View the processing menu
 
-```bash
-llmdump
-# Follow interactive prompts to enter URL and crawl depth
-```
+### Processing Menu
 
-2. Continue from existing crawl:
-
-```bash
-llmdump
-# Select "Continue from [crawl-id]" from main menu
-```
-
-3. View archived crawls:
-
-```bash
-llmdump
-# Select "View Archived Crawls" from main menu
-```
-
-### Directory Structure
+After crawling, you'll see a summary of documents and categories, then:
 
 ```
-.data/
-├── current-crawl/          # Active crawl data
-│   ├── crawlResult.json   # Raw crawl results
-│   ├── identifier.json    # Unique crawl identifier
-│   ├── categories.json    # Content categorization
-│   └── output/           # Generated markdown files
-└── history/              # Archived crawls
-    └── [crawl-id]-[timestamp]/
+? What would you like to do?
+❯ View/prune documents (In case we crawled some junk)
+  Export & clean documents
+  Export raw documents (No AI cleanup, faster)
+  Back to Main Menu
 ```
-
-## 🛠️ Processing Options
-
-### View Documents Summary
-
-```
-┌─────────────────────────────────┐
-│ Documents: 25                   │
-│ Categories: 5                   │
-│ Total Tokens: ~150,000         │
-│                                 │
-│ Category: Getting Started (8)   │
-│ Category: API Reference (12)    │
-│ Category: Examples (5)          │
-└─────────────────────────────────┘
-```
-
-### Clean & Concat Options
-
-1. Single file (all content)
-2. Multiple files (one per category)
 
 ### Document Management
 
-- Prune irrelevant content
-- Split categories
-- Archive crawls
-- View and edit categories
+When viewing documents, you can:
 
-## 🔍 Example Workflow
+- Navigate between categories
+- Prune documents (remove unwanted content)
+- Split categories using AI
+- View token estimates for each category
 
-```bash
-# 1. Start new crawl
-llmdump
-> Enter URL: https://docs.example.com
-> Enter limit: 20
+### Export Options
 
-# 2. View summary
-> Select "View Documents Summary"
+When exporting, choose between:
 
-# 3. Process documents
-> Select "Clean & Concat Documents"
-> Choose output format (single/multiple)
+1. Single file (all content in one markdown file)
+2. Multiple files (one file per category)
 
-# 4. Archive
-> Select "Archive This Crawl"
-```
+The tool will show token estimates for each option to help you choose.
 
-## 📝 Output Format
+### Configuration Management
 
-### Single File Output
+Access configuration settings to:
 
-```markdown
-# Getting Started
-
-## Introduction
-
-[Content...]
-
-# API Reference
-
-## Endpoints
-
-[Content...]
-```
-
-### Multiple Files Output
-
-```
-output/
-├── getting-started.md
-├── api-reference.md
-└── examples.md
-```
+- Update Firecrawl API key
+- Update OpenAI API key
+- Open config directory
+- Return to main menu
 
 ## 🤝 Contributing
 
